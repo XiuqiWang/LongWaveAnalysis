@@ -26,8 +26,10 @@ from scipy.signal import welch
 
 input_file = Path(
     r"C:\dev\Python\LongWaveAnalysis\Processed"
-    r"\ADV_F1_ADV01_rotated.parquet"
+    r"\ADV_F3_ADV05_rotated.parquet"
 )
+
+Case = "DVN F3 ADV05"
 
 output_folder = Path(
     r"C:\dev\Python\LongWaveAnalysis\Spectra"
@@ -38,18 +40,11 @@ output_folder.mkdir(
     exist_ok=True,
 )
 
-fs = 16.0
+fs = 16.0 # 16 Hz ADV
 
 # A new continuous segment begins when dt is larger than this.
 # Normal dt = 0.0625 s, while the observed burst gap is 10.0625 s.
 gap_threshold_seconds = 1.0
-
-# The dominant natural burst contains 28,640 samples:
-# 28,640 / 16 = 1,790 s = 29.833 minutes.
-nominal_burst_samples = 28_640
-
-# Shorter segments can optionally be retained if they are long enough.
-minimum_segment_minutes = 20.0
 
 # Welch settings.
 segment_seconds = 512.0
@@ -115,6 +110,9 @@ def calculate_autospectra(
 
     PSD units:
         (m/s)^2 / Hz
+        
+    velocity variance <- Amplitude u=Acos(2pi*ft); 
+    Stormy state -> higher variance -> higher PSD
     """
     cross = np.asarray(cross_shore, dtype=np.float64)
     along = np.asarray(alongshore, dtype=np.float64)
@@ -150,7 +148,7 @@ def calculate_autospectra(
         window="hann",
         nperseg=nperseg,
         noverlap=noverlap,
-        detrend="linear",
+        detrend=False,
         scaling="density",
         return_onesided=True,
     )
@@ -161,7 +159,7 @@ def calculate_autospectra(
         window="hann",
         nperseg=nperseg,
         noverlap=noverlap,
-        detrend="linear",
+        detrend=False,
         scaling="density",
         return_onesided=True,
     )
@@ -243,6 +241,36 @@ def split_segment_into_analysis_blocks(
 
     return blocks
 
+def polynomial_detrend(values, order=2):# remove the background mean flow
+    """
+    Remove a polynomial trend from one continuous velocity burst.
+
+    order=0: remove mean
+    order=1: remove linear trend
+    order=2: remove quadratic trend
+    """
+    values = np.asarray(values, dtype=np.float64)
+
+    if values.ndim != 1:
+        raise ValueError("Input must be one-dimensional.")
+
+    if not np.isfinite(values).all():
+        raise ValueError("Input contains non-finite values.")
+
+    x = np.linspace(-1.0, 1.0, len(values))
+
+    coefficients = np.polyfit(
+        x,
+        values,
+        deg=order,
+    )
+
+    trend = np.polyval(
+        coefficients,
+        x,
+    )
+
+    return values - trend, trend
 
 # ============================================================
 # READ PROCESSED DATA
@@ -334,12 +362,37 @@ print(
     .describe()
 )
 
+# Determine the nominal burst length automatically
+nominal_burst_samples = int(
+    segment_summary["sample_count"].mode().iloc[0]
+)
+
+print(
+    "\nDetected nominal burst length:",
+    nominal_burst_samples,
+    "samples",
+)
+
+print(
+    "Duration:",
+    nominal_burst_samples / fs / 60,
+    "minutes",
+)
+
+# Accept bursts that contain at least 95% of a full burst
+minimum_block_fraction = 0.95
+
 minimum_block_samples = int(
     round(
-        minimum_segment_minutes
-        * 60
-        * fs
+        nominal_burst_samples
+        * minimum_block_fraction
     )
+)
+
+print(
+    "Minimum accepted block:",
+    minimum_block_samples,
+    "samples",
 )
 
 
@@ -470,34 +523,58 @@ for analysis_block_number, block in enumerate(
 
         continue
 
-    # Interpolate only isolated missing values inside an otherwise
-    # acceptable continuous burst.
-    cross = (
+    # Interpolate isolated missing samples within an accepted burst.
+    cross_raw = (
         block["cross_shore"]
         .interpolate(
             method="linear",
             limit_direction="both",
         )
-        .to_numpy()
+        .to_numpy(dtype=np.float64)
     )
-
-    along = (
+    
+    along_raw = (
         block["alongshore"]
         .interpolate(
             method="linear",
             limit_direction="both",
         )
-        .to_numpy()
+        .to_numpy(dtype=np.float64)
     )
 
-    frequency, cross_psd, along_psd = (
-        calculate_autospectra(
-            cross_shore=cross,
-            alongshore=along,
-            fs=fs,
-            segment_seconds=segment_seconds,
-            overlap_fraction=overlap_fraction,
-        )
+    # Retain the average current before detrending.
+    mean_cross_current = np.mean(cross_raw)
+    mean_along_current = np.mean(along_raw)
+    
+    # Remove a quadratic background from the complete burst.
+    cross, cross_background = polynomial_detrend(
+        cross_raw,
+        order=2,
+    )
+    
+    along, along_background = polynomial_detrend(
+        along_raw,
+        order=2,
+    )
+    
+    # how much the fitted background current changes through each burst
+    cross_background_change = (
+        cross_background[-1]
+        - cross_background[0]
+    )
+    
+    along_background_change = (
+        along_background[-1]
+        - along_background[0]
+    )
+
+    # Calculate PSD from already detrended signals.
+    frequency, cross_psd, along_psd = calculate_autospectra(
+        cross_shore=cross,
+        alongshore=along,
+        fs=fs,
+        segment_seconds=segment_seconds,
+        overlap_fraction=overlap_fraction,
     )
 
     cross_ig_variance = integrate_spectral_band(
@@ -598,6 +675,10 @@ for analysis_block_number, block in enumerate(
                 cross_along_ig_ratio,
             "cross_ig_ss_ratio":
                 cross_ig_ss_ratio,
+            "mean_cross_current": 
+                mean_cross_current,
+            "mean_along_current": 
+                mean_along_current,
         }
     )
 
@@ -648,17 +729,17 @@ else:
 
 statistics_file = (
     output_folder
-    / "ADV01_burst_spectral_statistics.csv"
+    / f"{Case}""_burst_spectral_statistics.csv"
 )
 
 spectra_file = (
     output_folder
-    / "ADV01_burst_velocity_spectra.pkl"
+    / f"{Case}""_burst_velocity_spectra.pkl"
 )
 
 segment_file = (
     output_folder
-    / "ADV01_segment_summary.csv"
+    / f"{Case}""_segment_summary.csv"
 )
 
 statistics.to_csv(
@@ -691,60 +772,60 @@ print("Rejected blocks:")
 print((~statistics["accepted"]).sum())
 
 
-# ============================================================
-# PLOT FIRST ACCEPTED BURST
-# ============================================================
-if (
-    plot_first_valid_block
-    and first_valid_spectrum is not None
-):
-    positive = (
-        first_valid_spectrum["frequency_hz"] > 0
-    )
+# # ============================================================
+# # PLOT FIRST ACCEPTED BURST
+# # ============================================================
+# if (
+#     plot_first_valid_block
+#     and first_valid_spectrum is not None
+# ):
+#     positive = (
+#         first_valid_spectrum["frequency_hz"] > 0
+#     )
 
-    plot_data = first_valid_spectrum.loc[
-        positive
-    ]
+#     plot_data = first_valid_spectrum.loc[
+#         positive
+#     ]
 
-    plt.figure(figsize=(9, 6))
+#     plt.figure(figsize=(9, 6))
 
-    plt.loglog(
-        plot_data["frequency_hz"],
-        plot_data["cross_psd"],
-        label="Cross-shore",
-    )
+#     plt.loglog(
+#         plot_data["frequency_hz"],
+#         plot_data["cross_psd"],
+#         label="Cross-shore",
+#     )
 
-    plt.loglog(
-        plot_data["frequency_hz"],
-        plot_data["along_psd"],
-        label="Alongshore",
-    )
+#     plt.loglog(
+#         plot_data["frequency_hz"],
+#         plot_data["along_psd"],
+#         label="Alongshore",
+#     )
 
-    plt.axvspan(
-        ig_low_hz,
-        ig_high_hz,
-        alpha=0.20,
-        label="IG band",
-    )
+#     plt.axvspan(
+#         ig_low_hz,
+#         ig_high_hz,
+#         alpha=0.20,
+#         label="IG band",
+#     )
 
-    plt.axvspan(
-        ss_low_hz,
-        ss_high_hz,
-        alpha=0.10,
-        label="Sea-swell band",
-    )
+#     plt.axvspan(
+#         ss_low_hz,
+#         ss_high_hz,
+#         alpha=0.10,
+#         label="Sea-swell band",
+#     )
 
-    plt.xlabel("Frequency (Hz)")
-    plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
+#     plt.xlabel("Frequency (Hz)")
+#     plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
 
-    plt.title(
-        "ADV01 horizontal velocity autospectra\n"
-        f"{first_valid_spectrum['start_time'].iloc[0]}"
-    )
+#     plt.title(
+#         "ADV01 horizontal velocity autospectra\n"
+#         f"{first_valid_spectrum['start_time'].iloc[0]}"
+#     )
 
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+#     plt.legend()
+#     plt.tight_layout()
+#     plt.show()
     
 # ========================================
 # Evaluate statistics
@@ -780,31 +861,162 @@ print(
 )
         
 # Plot temporal evolution of RMS u_ig and v_ig
+accepted["mid_time"] = (
+    accepted["start_time"]
+    + (
+        accepted["end_time"]
+        - accepted["start_time"]
+    ) / 2
+)
 accepted = accepted.sort_values("mid_time")
 
 dt = accepted["mid_time"].diff().dt.total_seconds()
 
+accepted["cross_ig_rms_plot"] = accepted["cross_ig_rms"]
+accepted["along_ig_rms_plot"] = accepted["along_ig_rms"]
+
+large_gap = dt > 3600
+
 accepted.loc[
-    dt > 3600,
-    ["cross_ig_rms", "along_ig_rms"]
+    large_gap,
+    [
+        "cross_ig_rms_plot",
+        "along_ig_rms_plot",
+    ],
 ] = np.nan
 
 plt.figure(figsize=(12, 5))
 plt.plot(
     accepted["mid_time"],
-    accepted["cross_ig_rms"],
+    accepted["cross_ig_rms_plot"],
     label="Cross-shore IG RMS",
 )
 plt.plot(
     accepted["mid_time"],
-    accepted["along_ig_rms"],
+    accepted["along_ig_rms_plot"],
     label="Alongshore IG RMS",
 )
 plt.xlabel("Time")
 plt.ylabel("IG velocity RMS (m/s)")
+plt.title(f"{Case}")
 plt.legend()
 plt.tight_layout()
 plt.show()
+
+# ============================================================
+# Plot the most energetic IG burst
+# ============================================================
+accepted_statistics = statistics.loc[
+    statistics["accepted"]
+].copy()
+
+# Total horizontal IG variance for each burst.
+accepted_statistics["total_horizontal_ig_variance"] = (
+    accepted_statistics["cross_ig_variance"]
+    + accepted_statistics["along_ig_variance"]
+)
+
+# Find the most energetic accepted burst.
+most_energetic_row = accepted_statistics.loc[
+    accepted_statistics["total_horizontal_ig_variance"].idxmax()
+]
+
+# second most
+# accepted_statistics = accepted_statistics.sort_values(
+#     "total_horizontal_ig_variance",
+#     ascending=False,
+# )
+
+# second_energetic_row = accepted_statistics.iloc[1]
+
+most_energetic_block_number = int(
+    most_energetic_row["analysis_block_number"]
+)
+
+most_energetic_spectrum = spectra.loc[
+    spectra["analysis_block_number"]
+    == most_energetic_block_number
+].copy()
+
+if most_energetic_spectrum.empty:
+    raise RuntimeError(
+        "The selected energetic burst was not found in spectra."
+    )
+
+positive = (
+    most_energetic_spectrum["frequency_hz"] > 0
+)
+
+plot_data = most_energetic_spectrum.loc[
+    positive
+]
+
+plt.figure(figsize=(9, 6))
+
+plt.loglog(
+    plot_data["frequency_hz"],
+    plot_data["cross_psd"],
+    label="Cross-shore",
+)
+
+plt.loglog(
+    plot_data["frequency_hz"],
+    plot_data["along_psd"],
+    label="Alongshore",
+)
+
+plt.axvspan(
+    ig_low_hz,
+    ig_high_hz,
+    alpha=0.20,
+    label="IG band",
+)
+
+plt.axvspan(
+    ss_low_hz,
+    ss_high_hz,
+    alpha=0.10,
+    label="Sea-swell band",
+)
+
+plt.xlabel("Frequency (Hz)")
+plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
+
+plt.title(
+    "Most energetic horizontal IG burst " 
+    f"({Case})"
+    "\n"
+    f"{most_energetic_row['start_time']} to "
+    f"{most_energetic_row['end_time']}"
+)
+
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# print("\nMost energetic IG burst:")
+# print("Block number:", most_energetic_block_number)
+# print("Start:", most_energetic_row["start_time"])
+# print("End:", most_energetic_row["end_time"])
+# print(
+#     "Cross-shore IG RMS:",
+#     most_energetic_row["cross_ig_rms"],
+#     "m/s",
+# )
+# print(
+#     "Alongshore IG RMS:",
+#     most_energetic_row["along_ig_rms"],
+#     "m/s",
+# )
+# print(
+#     "Total horizontal IG RMS:",
+#     np.sqrt(
+#         most_energetic_row[
+#             "total_horizontal_ig_variance"
+#         ]
+#     ),
+#     "m/s",
+# )
 
 # Plot median spectrum
 median_spectrum = (
@@ -841,15 +1053,70 @@ plt.fill_between(
     plot_data["frequency_hz"],
     plot_data["cross_psd_q25"],
     plot_data["cross_psd_q75"],
+    color="grey",
     alpha=0.2,
 )
 
-plt.axvspan(0.005, 0.05, alpha=0.15, label="IG band")
-plt.axvspan(0.05, 1.00, alpha=0.15, label="Sea swell band")
+plt.axvspan(0.005, 0.05, alpha=0.20, label="IG band")
+plt.axvspan(0.05, 1.00, alpha=0.10, label="Sea swell band")
 
 plt.xlabel("Frequency (Hz)")
 plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
-plt.title("Median ADV01 velocity autospectra")
+plt.title("Median velocity autospectra " f"({Case})")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# ============================================================
+# Plot mean spectrum
+# ============================================================
+
+mean_spectrum = (
+    spectra
+    .groupby("frequency_hz", as_index=False)
+    .agg(
+        cross_psd_mean=("cross_psd", "mean"),
+        along_psd_mean=("along_psd", "mean"),
+        cross_psd_std=("cross_psd", "std"),
+        along_psd_std=("along_psd", "std"),
+    )
+)
+
+positive = mean_spectrum["frequency_hz"] > 0
+plot_data = mean_spectrum.loc[positive]
+
+plt.figure(figsize=(9, 6))
+
+plt.loglog(
+    plot_data["frequency_hz"],
+    plot_data["cross_psd_mean"],
+    label="Cross-shore mean",
+)
+
+plt.loglog(
+    plot_data["frequency_hz"],
+    plot_data["along_psd_mean"],
+    label="Alongshore mean",
+)
+
+plt.axvspan(
+    0.005,
+    0.05,
+    alpha=0.20,
+    label="IG band",
+)
+
+plt.axvspan(
+    0.05,
+    1.00,
+    alpha=0.10,
+    label="Sea swell band",
+)
+
+plt.xlabel("Frequency (Hz)")
+plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
+plt.title("Mean velocity autospectra " f"({Case})")
+
 plt.legend()
 plt.tight_layout()
 plt.show()
