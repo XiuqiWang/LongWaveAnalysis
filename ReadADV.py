@@ -30,10 +30,17 @@ def _read_velocity_chunked(
     """
     Read one velocity column in blocks.
 
-    Unreadable blocks are filled with NaN.
+    Stops at the first unreadable HDF5 block.
     """
+
     number_of_samples = stop_index - start_index
-    output = np.full(number_of_samples, np.nan, dtype=np.float64)
+
+    output = np.full(
+        number_of_samples,
+        np.nan,
+        dtype=np.float64,
+    )
+
     failures = []
 
     scale = _scalar_attribute(
@@ -41,31 +48,44 @@ def _read_velocity_chunked(
         "scale_factor",
         1.0,
     )
+
     offset = _scalar_attribute(
         dataset,
         "add_offset",
         0.0,
     )
 
-    fill_value = dataset.attrs.get("_FillValue", None)
+    fill_value = dataset.attrs.get(
+        "_FillValue",
+        None,
+    )
 
     if fill_value is not None:
-        fill_value = float(np.asarray(fill_value).squeeze())
+        fill_value = float(
+            np.asarray(fill_value).squeeze()
+        )
 
     for block_start in range(
         start_index,
         stop_index,
         block_samples,
     ):
+
         block_stop = min(
             block_start + block_samples,
             stop_index,
         )
 
-        destination_start = block_start - start_index
-        destination_stop = block_stop - start_index
+        destination_start = (
+            block_start - start_index
+        )
+
+        destination_stop = (
+            block_stop - start_index
+        )
 
         try:
+
             raw = dataset[
                 block_start:block_stop,
                 column,
@@ -74,11 +94,12 @@ def _read_velocity_chunked(
             if fill_value is not None:
                 raw[raw == fill_value] = np.nan
 
-            output[destination_start:destination_stop] = (
-                raw * scale + offset
-            )
+            output[
+                destination_start:destination_stop
+            ] = raw * scale + offset
 
         except OSError as exc:
+
             failures.append(
                 {
                     "start_index": block_start,
@@ -87,6 +108,14 @@ def _read_velocity_chunked(
                 }
             )
 
+            # Stop at first unreadable block
+            return (
+                output[:destination_start],
+                failures,
+            )
+
+    # IMPORTANT:
+    # This return is OUTSIDE the for-loop.
     return output, failures
 
 
@@ -118,7 +147,6 @@ def read_adv_block_chunked(
     """
     file_path = Path(file_path)
 
-    z_velocity_m = 0.488
     height_cm = round(z_velocity_m * 100)
 
     variable_components = [
@@ -210,9 +238,13 @@ def read_adv_block_chunked(
             }
         )
 
+        # Read all requested variables first
+        variable_data = {}
+        
         for variable_name, component in variable_components:
+        
             dataset = f[variable_name]
-
+        
             values, failures = _read_velocity_chunked(
                 dataset=dataset,
                 start_index=start_index,
@@ -220,13 +252,9 @@ def read_adv_block_chunked(
                 column=adv_column,
                 block_samples=block_samples,
             )
-
-            output_name = (
-                f"{component}_{instrument}_{height_cm}cm"
-            )
-
-            result[output_name] = values
-
+        
+            variable_data[component] = values
+        
             for failure in failures:
                 failure.update(
                     {
@@ -236,6 +264,33 @@ def read_adv_block_chunked(
                     }
                 )
                 all_failures.append(failure)
+        
+        print("Length of result:", len(result))
+
+        for component, values in variable_data.items():
+            print(component, len(values))
+        # -------------------------------------------------
+        # Determine the shortest successfully read length
+        # -------------------------------------------------
+        
+        n = len(result)
+        
+        for values in variable_data.values():
+            n = min(n, len(values))
+            
+        print("n =", n)
+        
+        # Trim the time vector
+        result = result.iloc[:n].copy()
+        
+        # Add the velocity columns
+        for component, values in variable_data.items():
+        
+            output_name = (
+                f"{component}_{instrument}_{height_cm}cm"
+            )
+        
+            result[output_name] = values[:n]
 
     return result, all_failures
 
@@ -582,16 +637,17 @@ def rotate_enu_to_cross_along(
 
 file_path = (
     r"C:\dev\Python\LongWaveAnalysis\ADV"
-    r"\adv_dvn_201804_F1.nc"
+    r"\adv_dvn_201804_F3.nc"
 )
 
-adv_column = 0
-instrument_name = "ADV01"
+Column = 0
+instrument_name = "ADV05"
+height = 0.49
 
 #find the first active velocity time
 index, timestamp, diagnostics = find_first_active_window(
     file_path=file_path,
-    column=adv_column, 
+    column=Column, 
     fs=16.0,
     window_seconds=60,
     std_threshold=0.001,
@@ -602,7 +658,7 @@ index, timestamp, diagnostics = find_first_active_window(
 # print("UTC time:", timestamp)
 # print("Diagnostics:", diagnostics)
 
-target_time_stop = pd.Timestamp("2018-05-15 13:30:00", tz="UTC")
+target_time_stop = pd.Timestamp("2018-05-15 17:00:00", tz="UTC")
 
 with h5py.File(file_path, "r") as f:
     stop = find_time_index(
@@ -614,16 +670,16 @@ start = index
 
 df, failures = read_adv_block_chunked(
     file_path=file_path,
-    adv_column=0,
-    instrument="ADV01",
-    z_velocity_m=0.488,
+    adv_column=Column,
+    instrument=instrument_name,
+    z_velocity_m=height,
     start_index=start,
     stop_index=stop,
     block_samples=100_000,
     include_up=False,
 )
 
-print("\nExtracted ADV01 data")
+print("\nExtracted " f"{instrument_name}" " data")
 print("Start:", df["time"].iloc[0])
 print("End:", df["time"].iloc[-1])
 print("Rows:", len(df))
@@ -651,20 +707,22 @@ print(df.isna().sum())
 #     )
 
 # Coordinates of the selected transect points
-nearshore_point = (52.2300, 4.3900) #DVN1
-offshore_point = (52.2800, 4.2400) #DVN3
+nearshore_point = (52.23317, 4.3873215) #DVN3
+offshore_point = (52.28087, 4.2432895) #DVN1
 
-# Rotate for ADV01 (higher one) velocity
+# Rotate velocity
 df["cross_shore"], df["alongshore"], rotation_info = (
     rotate_enu_to_cross_along(
-        east=df["east_ADV01_49cm"],
-        north=df["north_ADV01_49cm"],
+        east=df["east_ADV05_49cm"],
+        north=df["north_ADV05_49cm"],
         point_from=nearshore_point,
         point_to=offshore_point,
     )
 )
 
-# print(rotation_info)
+print(rotation_info)
+for key, value in rotation_info.items():
+    print(f"{key}: {value}")
 # print(
 #     df[
 #         [
@@ -676,13 +734,35 @@ df["cross_shore"], df["alongshore"], rotation_info = (
 #         ]
 #     ].head()
 # )    
+# # verify orthogonality and unit length
+# cross_norm = np.hypot(
+#     rotation_info["cross_shore_unit_east"],
+#     rotation_info["cross_shore_unit_north"],
+# )
 
-# Retain only variables relevant to ADV01 processing.
+# along_norm = np.hypot(
+#     rotation_info["alongshore_unit_east"],
+#     rotation_info["alongshore_unit_north"],
+# )
+
+# dot_product = (
+#     rotation_info["cross_shore_unit_east"]
+#     * rotation_info["alongshore_unit_east"]
+#     +
+#     rotation_info["cross_shore_unit_north"]
+#     * rotation_info["alongshore_unit_north"]
+# )
+
+# print("Cross unit-vector length:", cross_norm)
+# print("Along unit-vector length:", along_norm)
+# print("Cross/along dot product:", dot_product)
+
+# Retain only variables relevant to ADV processing.
 df = df[
     [
         "time",
-        "east_ADV01_49cm",
-        "north_ADV01_49cm",
+        "east_ADV05_49cm",
+        "north_ADV05_49cm",
         "cross_shore",
         "alongshore",
     ]
@@ -700,7 +780,7 @@ output_folder.mkdir(
 
 output_file = (
     output_folder
-    / "ADV_F1_ADV01_rotated.parquet"
+    / "ADV_F3_ADV05_rotated.parquet"
 )
 
 df.to_parquet(
@@ -708,5 +788,5 @@ df.to_parquet(
     index=False,
 )
 
-print("\nSaved processed ADV01 data to:")
+print("\nSaved processed ADV data to:")
 print(output_file)
