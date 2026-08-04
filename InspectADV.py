@@ -9,21 +9,19 @@ Inspects the data structure of adv.nc files
 """
 
 import h5py
+import numpy as np
 
 file_path = (
     r"C:\dev\Python\LongWaveAnalysis\ADV"
-    r"\adv_dvn_201804_F1.nc"
+    r"\pressure_adv_dvn_201804_F1.nc"
 )
 
-variables = [
-    "time",
-    "East",
-    "North",
-    "Up",
-    "East_despiked",
-    "North_despiked",
-    "Up_despiked",
-]
+with h5py.File(file_path, "r") as f:
+    variables = list(f.keys())
+
+print("Variables found:")
+for name in variables:
+    print(" ", name)
 
 with h5py.File(file_path, "r") as f:
     for variable_name in variables:
