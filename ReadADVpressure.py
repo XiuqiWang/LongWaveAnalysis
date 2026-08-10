@@ -14,8 +14,7 @@ The file dimensions are:
 Column 0 corresponds to the first instrument listed in "instrument".
 Column 1 corresponds to the second instrument.
 
-Unreadable HDF5 blocks are handled by stopping at the first corrupted
-block and retaining the continuous data that were read successfully.
+Unreadable HDF5 blocks are left with NaNs.
 """
 
 from pathlib import Path
@@ -24,6 +23,35 @@ import h5py
 import numpy as np
 import pandas as pd
 
+# ============================================================
+# USER SETTINGS
+# ============================================================
+file_path = Path(
+    r"C:\dev\Python\LongWaveAnalysis\ADV"
+    r"\pressure_adv_dvn_201804_F3.nc"
+)
+case_id = "F3_ADV05"
+
+# Select the P_APC instrument column.
+# The corresponding instrument name and pressure height
+# are read automatically from the NetCDF metadata.
+pressure_column = 0
+
+# Select the time period to extract.
+#
+# Replace these with the actual deployment limits that you want
+# to analyze.
+target_time_start = pd.Timestamp(
+    "2018-04-04 00:00:00",
+    tz="UTC",
+)
+
+target_time_stop = pd.Timestamp(
+    "2018-05-15 17:00:00",
+    tz="UTC",
+)
+
+block_samples = 100_000
 
 # ============================================================
 # FUNCTIONS
@@ -52,8 +80,7 @@ def _read_pressure_chunked(
 
     The NetCDF scale_factor and add_offset are applied automatically.
 
-    Reading stops at the first unreadable HDF5 block. Only the
-    successfully read continuous portion is returned.
+    Unreadable chunks are left with NaNs.
 
     Parameters
     ----------
@@ -158,11 +185,15 @@ def _read_pressure_chunked(
             )
             print(type(exc).__name__, exc)
 
-            # Retain only the continuous part before corruption.
-            return (
-                output[:destination_start],
-                failures,
-            )
+            # # Retain only the continuous part before corruption.
+            # return (
+            #     output[:destination_start],
+            #     failures,
+            # )
+            # output was initialized as NaN,
+            # so this failed block stays NaN.
+            # Continue attempting later blocks.
+            continue
 
     return output, failures
 
@@ -176,7 +207,7 @@ def _read_time_chunked(
     """
     Read and decode the time coordinate in blocks.
 
-    Reading stops at the first unreadable HDF5 block.
+    Unreadable chunks are left with NaNs.
     """
     number_of_samples = stop_index - start_index
 
@@ -247,10 +278,14 @@ def _read_time_chunked(
             )
             print(type(exc).__name__, exc)
 
-            return (
-                output[:destination_start],
-                failures,
-            )
+            # return (
+            #     output[:destination_start],
+            #     failures,
+            # )
+            # output was initialized as NaN,
+            # so this failed block stays NaN.
+            # Continue attempting later blocks.
+            continue
 
     return output, failures
 
@@ -451,18 +486,10 @@ def read_pressure_block_chunked(
 
         # Time and pressure may stop at different locations if one
         # variable encounters an unreadable block first.
-        successful_length = min(
-            len(epoch_seconds),
-            len(pressure_pa),
-        )
-
-        epoch_seconds = (
-            epoch_seconds[:successful_length]
-        )
-
-        pressure_pa = (
-            pressure_pa[:successful_length]
-        )
+        if len(epoch_seconds) != len(pressure_pa):
+            raise RuntimeError(
+                "Time and pressure arrays have inconsistent lengths."
+            )
 
         pressure_column_name = (
             f"pressure_apc_"
@@ -560,44 +587,6 @@ def add_failure_times(
 
 
 # ============================================================
-# USER SETTINGS
-# ============================================================
-
-file_path = Path(
-    r"C:\dev\Python\LongWaveAnalysis\ADV"
-    r"\pressure_adv_dvn_201804_F3.nc"
-)
-
-# P_APC column:
-#     0 = ADV01
-#     1 = ADV02
-pressure_column = 0
-
-instrument_name = "ADV05"
-
-# From Z_pres:
-#     ADV01 = 0.895 m
-#     ADV02 = 0.596 m
-z_pressure_m = 0.90
-
-# Select the time period to extract.
-#
-# Replace these with the actual deployment limits that you want
-# to analyze.
-target_time_start = pd.Timestamp(
-    "2018-04-04 00:00:00",
-    tz="UTC",
-)
-
-target_time_stop = pd.Timestamp(
-    "2018-05-15 17:00:00",
-    tz="UTC",
-)
-
-block_samples = 100_000
-
-
-# ============================================================
 # INSPECT INSTRUMENT METADATA
 # ============================================================
 
@@ -643,21 +632,21 @@ with h5py.File(file_path, "r") as f:
         "m",
     )
 
-    if file_instrument != instrument_name:
-        raise ValueError(
-            f"Column {pressure_column} contains "
-            f"{file_instrument}, not {instrument_name}."
-        )
+    # if file_instrument != instrument_name:
+    #     raise ValueError(
+    #         f"Column {pressure_column} contains "
+    #         f"{file_instrument}, not {instrument_name}."
+    #     )
 
-    if not np.isclose(
-        file_height,
-        z_pressure_m,
-        atol=0.001,
-    ):
-        raise ValueError(
-            "The selected z_pressure_m does not match "
-            f"Z_pres in the file: {file_height} m."
-        )
+    # if not np.isclose(
+    #     file_height,
+    #     z_pressure_m,
+    #     atol=0.001,
+    # ):
+    #     raise ValueError(
+    #         "The selected z_pressure_m does not match "
+    #         f"Z_pres in the file: {file_height} m."
+    #     )
 
 
 # ============================================================
@@ -686,8 +675,8 @@ print("Requested stop index: ", stop_index)
 df, failures = read_pressure_block_chunked(
     file_path=file_path,
     pressure_column=pressure_column,
-    instrument_name=instrument_name,
-    z_pressure_m=z_pressure_m,
+    instrument_name=file_instrument,
+    z_pressure_m=file_height,
     start_index=start_index,
     stop_index=stop_index,
     block_samples=block_samples,
@@ -700,8 +689,8 @@ df, failures = read_pressure_block_chunked(
 
 pressure_name = (
     f"pressure_apc_"
-    f"{instrument_name}_"
-    f"{round(z_pressure_m * 100)}cm_pa"
+    f"{file_instrument}_"
+    f"{round(file_height * 100)}cm_pa"
 )
 
 if df.empty:
@@ -711,7 +700,7 @@ if df.empty:
 
 print(
     "\nExtracted",
-    instrument_name,
+    file_instrument,
     "pressure data",
 )
 
@@ -777,7 +766,7 @@ output_folder.mkdir(
 
 output_file = (
     output_folder
-    / "Pressure_F3_ADV05_APC.parquet"
+    / f"Pressure_{case_id}_APC.parquet"
 )
 
 df.to_parquet(
