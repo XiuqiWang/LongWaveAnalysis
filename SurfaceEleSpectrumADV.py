@@ -51,7 +51,10 @@ output_folder = Path(
 )
 output_folder.mkdir(parents=True, exist_ok=True)
 
-fs = 16.0
+# The ADV pressure sensor is sampled natively at 4 Hz.
+# In the processed file each 4-Hz pressure value is repeated on the
+# synchronized 16-Hz ADV time grid.
+native_pressure_fs_hz = 4.0
 z_pressure_m = 0.89 # Change for Frame!
 
 rho_water_kg_m3 = 1025.0
@@ -427,6 +430,218 @@ def integrate_spectral_band(
         selected_frequency,
     )
 
+def detect_sampling_frequency(time):
+    """Estimate sampling frequency from positive timestamp intervals."""
+    dt = (
+        pd.Series(time)
+        .diff()
+        .dt.total_seconds()
+        .to_numpy(dtype=float)
+    )
+
+    positive = dt[
+        np.isfinite(dt)
+        & (dt > 0)
+    ]
+
+    if positive.size == 0:
+        raise ValueError(
+            "Could not estimate the sampling interval."
+        )
+
+    # Use the lower part of the interval distribution so that natural
+    # inter-burst gaps do not influence the estimate.
+    cutoff = np.nanpercentile(positive, 25)
+    regular = positive[positive <= cutoff * 1.5]
+
+    if regular.size == 0:
+        regular = positive
+
+    median_dt = float(np.nanmedian(regular))
+
+    if median_dt <= 0:
+        raise ValueError(
+            "Detected a nonpositive sampling interval."
+        )
+
+    return 1.0 / median_dt, median_dt
+
+def reconstruct_native_pressure_sampling(
+    df,
+    pressure_column,
+    native_fs_hz,
+    gap_threshold_seconds=1.0,
+):
+    """
+    Reconstruct the native pressure sampling from a higher-frequency
+    synchronized storage grid.
+
+    Example:
+        stored timeline = 16 Hz
+        native pressure = 4 Hz
+
+    If every native pressure sample is repeated four times, retain one
+    value from each four-sample group.
+
+    Reconstruction is performed separately within each continuous
+    stored-data segment so that gaps do not shift the decimation phase.
+    """
+
+    if native_fs_hz <= 0:
+        raise ValueError(
+            "native_fs_hz must be positive."
+        )
+
+    # --------------------------------------------------------
+    # Detect the stored timestamp frequency.
+    # --------------------------------------------------------
+
+    stored_fs_hz, stored_dt_seconds = (
+        detect_sampling_frequency(
+            df["time"]
+        )
+    )
+
+    ratio = stored_fs_hz / native_fs_hz
+
+    repeat_factor = int(round(ratio))
+
+    if repeat_factor < 1:
+        raise ValueError(
+            "Native pressure sampling frequency cannot exceed "
+            "the stored timestamp frequency."
+        )
+
+    if not np.isclose(
+        ratio,
+        repeat_factor,
+        rtol=0.01,
+        atol=0.01,
+    ):
+        raise ValueError(
+            "Stored/native sampling-frequency ratio is not "
+            f"approximately an integer: {ratio:.6f}"
+        )
+
+    print("\nStored pressure representation:")
+    print(
+        "Stored timestamp dt =",
+        stored_dt_seconds,
+        "s",
+    )
+    print(
+        "Stored timestamp fs =",
+        stored_fs_hz,
+        "Hz",
+    )
+    print(
+        "Native pressure fs =",
+        native_fs_hz,
+        "Hz",
+    )
+    print(
+        "Repeat factor =",
+        repeat_factor,
+    )
+
+    # --------------------------------------------------------
+    # Identify continuous segments on the ORIGINAL timeline.
+    #
+    # This is important because we do not want a large data gap
+    # to shift the every-Nth-sample reconstruction.
+    # --------------------------------------------------------
+
+    work = identify_continuous_segments(
+        df,
+        gap_threshold_seconds=gap_threshold_seconds,
+    )
+
+    reconstructed_segments = []
+
+    for _, segment in work.groupby(
+        "segment_id",
+        sort=True,
+    ):
+        segment = (
+            segment
+            .sort_values("time")
+            .reset_index(drop=True)
+        )
+
+        # One value from each group of repeated samples.
+        reconstructed = (
+            segment.iloc[::repeat_factor]
+            [["time", pressure_column]]
+            .copy()
+        )
+
+        reconstructed_segments.append(
+            reconstructed
+        )
+
+    if not reconstructed_segments:
+        raise RuntimeError(
+            "No pressure data were available for reconstruction."
+        )
+
+    output = (
+        pd.concat(
+            reconstructed_segments,
+            ignore_index=True,
+        )
+        .sort_values("time")
+        .reset_index(drop=True)
+    )
+
+    # --------------------------------------------------------
+    # Verify the reconstructed frequency.
+    # --------------------------------------------------------
+
+    reconstructed_fs_hz, reconstructed_dt_seconds = (
+        detect_sampling_frequency(
+            output["time"]
+        )
+    )
+
+    print("\nReconstructed native pressure sampling:")
+    print(
+        "dt =",
+        reconstructed_dt_seconds,
+        "s",
+    )
+    print(
+        "fs =",
+        reconstructed_fs_hz,
+        "Hz",
+    )
+    print(
+        "Rows before reconstruction:",
+        len(df),
+    )
+    print(
+        "Rows after reconstruction:",
+        len(output),
+    )
+
+    if not np.isclose(
+        reconstructed_fs_hz,
+        native_fs_hz,
+        rtol=0.01,
+    ):
+        raise RuntimeError(
+            "Reconstructed pressure frequency does not agree "
+            f"with the requested native frequency of "
+            f"{native_fs_hz} Hz."
+        )
+
+    return (
+        output,
+        reconstructed_fs_hz,
+        reconstructed_dt_seconds,
+        stored_fs_hz,
+        repeat_factor,
+    )
+
 
 # ============================================================
 # READ PRESSURE PARQUET
@@ -471,6 +686,40 @@ print("Rows: ", len(df))
 print("\nMissing pressure values:")
 print(df[pressure_column].isna().sum())
 
+# ============================================================
+# RECONSTRUCT NATIVE 4-HZ PRESSURE RECORD
+# ============================================================
+
+(
+    df,
+    fs,
+    regular_dt_seconds,
+    stored_fs_hz,
+    pressure_repeat_factor,
+) = reconstruct_native_pressure_sampling(
+    df=df,
+    pressure_column=pressure_column,
+    native_fs_hz=native_pressure_fs_hz,
+    gap_threshold_seconds=gap_threshold_seconds,
+)
+
+print("\nNative pressure record:")
+print(
+    "Start:",
+    df["time"].iloc[0],
+)
+print(
+    "End:  ",
+    df["time"].iloc[-1],
+)
+print(
+    "Rows: ",
+    len(df),
+)
+print(
+    "Missing pressure values:",
+    df[pressure_column].isna().sum(),
+)
 
 # ============================================================
 # DETECT NATURAL BURSTS AND NOMINAL LENGTH
@@ -927,15 +1176,10 @@ statistics_file = (
     / f"{case_id}_pressure_burst_statistics.csv"
 )
 
-spectra_file = (
-    output_folder
-    / f"{case_id}_surface_elevation_spectra.pkl"
-)
-
-segment_file = (
-    output_folder
-    / f"{case_id}_pressure_segment_summary.csv"
-)
+# spectra_file = (
+#     output_folder
+#     / f"{case_id}_surface_elevation_spectra.pkl"
+# )
 
 # One shared, long-format table for comparison across all cases.
 # Re-running a case replaces that case's existing rows rather than duplicating
@@ -946,8 +1190,7 @@ common_wave_heights_file = (
 )
 
 statistics.to_csv(statistics_file, index=False)
-spectra.to_pickle(spectra_file)
-segment_summary.to_csv(segment_file, index=False)
+# spectra.to_pickle(spectra_file)
 
 comparison_columns = [
     "case_id",
@@ -1002,14 +1245,11 @@ comparison = comparison.sort_values(
 )
 comparison.to_csv(common_wave_heights_file, index=False)
 
-print("\nSaved segment summary:")
-print(segment_file)
-
 print("\nSaved spectral statistics:")
 print(statistics_file)
 
-print("\nSaved spectra:")
-print(spectra_file)
+# print("\nSaved spectra:")
+# print(spectra_file)
 
 print("\nUpdated shared cross-case wave-height file:")
 print(common_wave_heights_file)
@@ -1170,11 +1410,11 @@ if not energetic_candidates.empty and not spectra.empty:
         "ss_effective_high_hz"
     ]
 
-    plt.axvline(
-        common_ss_high_hz,
-        linestyle=":",
-        label=f"Common cutoff ({common_ss_high_hz:.3f} Hz)",
-    )
+    # plt.axvline(
+    #     common_ss_high_hz,
+    #     linestyle=":",
+    #     label=f"Common cutoff ({common_ss_high_hz:.3f} Hz)",
+    # )
 
     if np.isfinite(cutoff):
         plt.axvline(
@@ -1260,6 +1500,7 @@ if not spectra.empty:
 
     plt.xlabel("Frequency (Hz)")
     plt.ylabel(r"Surface-elevation PSD (m$^2$/Hz)")
+    plt.ylim(1e-4, 2e-1)
     plt.title(
         f"Median surface-elevation spectrum ({case_label})"
     )
@@ -1316,9 +1557,11 @@ if not spectra.empty:
         alpha=0.10,
         label="Requested sea-swell band",
     )
+    
 
     plt.xlabel("Frequency (Hz)")
     plt.ylabel(r"Surface-elevation PSD (m$^2$/Hz)")
+    plt.ylim(2e-4, 2e-1)
     plt.title(
         f"Mean surface-elevation spectrum ({case_label})"
     )
