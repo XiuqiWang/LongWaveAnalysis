@@ -38,13 +38,13 @@ from scipy.signal import welch
 
 input_file = Path(
     r"C:\dev\Python\LongWaveAnalysis\Processed"
-    r"\Pressure_F1_ADV01_APC.parquet"
+    r"\Pressure_F3_ADV05_APC.parquet"
 )
 
-case_id = "DVN_F1_ADV01"
-case_label = "DVN F1 ADV01"
+case_id = "DVN_F3_ADV05"
+case_label = "DVN F3 ADV05"
 
-pressure_column = "pressure_apc_ADV01_90cm_pa"
+pressure_column = "pressure_apc_ADV05_90cm_pa"
 
 output_folder = Path(
     r"C:\dev\Python\LongWaveAnalysis\Spectra"
@@ -55,7 +55,7 @@ output_folder.mkdir(parents=True, exist_ok=True)
 # In the processed file each 4-Hz pressure value is repeated on the
 # synchronized 16-Hz ADV time grid.
 native_pressure_fs_hz = 4.0
-z_pressure_m = 0.89 # Change for Frame!
+z_pressure_m = 0.90 # Change for Frame!
 
 rho_water_kg_m3 = 1025.0
 gravity_m_s2 = 9.81
@@ -78,7 +78,7 @@ common_ss_high_hz = 0.185
 minimum_valid_fraction = 0.98
 minimum_block_fraction = 0.95
 minimum_water_depth_m = 0.25
-expected_water_depth_m = 20 # Change for Frame!
+expected_water_depth_m = 12 # Change for Frame!
 maximum_depth_deviation_m = 3.0
 
 detrend_order = 2
@@ -810,12 +810,14 @@ statistics_records = []
 spectral_records = []
 
 for analysis_block_number, block in enumerate(analysis_blocks):
+
     start_time = block["time"].iloc[0]
     end_time = block["time"].iloc[-1]
 
     source_segment_id = int(
         block["source_segment_id"].iloc[0]
     )
+
     subblock_number = int(
         block["subblock_number"].iloc[0]
     )
@@ -829,48 +831,102 @@ for analysis_block_number, block in enumerate(analysis_blocks):
         .mean()
     )
 
-    rejection_reason = ""
-
-    if sample_count < minimum_block_samples:
-        rejection_reason = "analysis block too short"
-    elif valid_fraction < minimum_valid_fraction:
-        rejection_reason = "too many missing pressure samples"
-
     base_record = {
-        "analysis_block_number": analysis_block_number,
-        "source_segment_id": source_segment_id,
-        "subblock_number": subblock_number,
-        "start_time": start_time,
-        "end_time": end_time,
-        "sample_count": sample_count,
-        "duration_minutes": duration_minutes,
-        "valid_fraction": valid_fraction,
+        "analysis_block_number":
+            analysis_block_number,
+        "source_segment_id":
+            source_segment_id,
+        "subblock_number":
+            subblock_number,
+        "start_time":
+            start_time,
+        "end_time":
+            end_time,
+        "sample_count":
+            sample_count,
+        "duration_minutes":
+            duration_minutes,
+        "valid_fraction":
+            valid_fraction,
     }
 
-    if rejection_reason:
+    # --------------------------------------------------------
+    # Helper for recording rejected blocks
+    # --------------------------------------------------------
+
+    def rejected_record(
+        reason,
+        mean_pressure_pa=np.nan,
+        mean_pressure_head_m=np.nan,
+        mean_water_depth_m=np.nan,
+        pressure_std_pa=np.nan,
+        pressure_frozen_fraction=np.nan,
+    ):
+        return {
+            **base_record,
+            "accepted": False,
+            "rejection_reason": reason,
+            "mean_pressure_pa":
+                mean_pressure_pa,
+            "mean_pressure_head_m":
+                mean_pressure_head_m,
+            "mean_water_depth_m":
+                mean_water_depth_m,
+            "pressure_std_pa":
+                pressure_std_pa,
+            "pressure_frozen_fraction":
+                pressure_frozen_fraction,
+            "ig_variance_m2":
+                np.nan,
+            "ss_variance_m2":
+                np.nan,
+            "ss_common_fc_variance_m2":
+                np.nan,
+            "hm0_ig_m":
+                np.nan,
+            "hm0_ss_m":
+                np.nan,
+            "hm0_ss_common_fc_m":
+                np.nan,
+            "common_ss_high_hz":
+                common_ss_high_hz,
+            "common_fc_reliable":
+                False,
+            "ig_to_ss_variance_ratio":
+                np.nan,
+            "ig_to_ss_common_fc_variance_ratio":
+                np.nan,
+            "ig_effective_high_hz":
+                np.nan,
+            "ss_effective_high_hz":
+                np.nan,
+            "max_reliable_frequency_hz":
+                np.nan,
+        }
+
+    # --------------------------------------------------------
+    # Basic block QC
+    # --------------------------------------------------------
+
+    if sample_count < minimum_block_samples:
         statistics_records.append(
-            {
-                **base_record,
-                "accepted": False,
-                "rejection_reason": rejection_reason,
-                "mean_pressure_pa": np.nan,
-                "mean_pressure_head_m": np.nan,
-                "mean_water_depth_m": np.nan,
-                "ig_variance_m2": np.nan,
-                "ss_variance_m2": np.nan,
-                "ss_common_fc_variance_m2": np.nan,
-                "hm0_ig_m": np.nan,
-                "hm0_ss_m": np.nan,
-                "hm0_ss_common_fc_m": np.nan,
-                "common_ss_high_hz": common_ss_high_hz,
-                "common_fc_reliable": False,
-                "ig_to_ss_variance_ratio": np.nan,
-                "ig_effective_high_hz": np.nan,
-                "ss_effective_high_hz": np.nan,
-                "max_reliable_frequency_hz": np.nan,
-            }
+            rejected_record(
+                "analysis block too short"
+            )
         )
         continue
+
+    if valid_fraction < minimum_valid_fraction:
+        statistics_records.append(
+            rejected_record(
+                "too many missing pressure samples"
+            )
+        )
+        continue
+
+    # --------------------------------------------------------
+    # Fill isolated missing pressure values
+    # --------------------------------------------------------
 
     pressure_pa = (
         block[pressure_column]
@@ -881,9 +937,61 @@ for analysis_block_number, block in enumerate(analysis_blocks):
         .to_numpy(dtype=np.float64)
     )
 
-    mean_pressure_pa = float(np.mean(pressure_pa))
+    if not np.isfinite(pressure_pa).all():
+        statistics_records.append(
+            rejected_record(
+                "non-finite pressure after interpolation"
+            )
+        )
+        continue
 
-    # P_APC is pressure due to seawater, in Pa.
+    mean_pressure_pa = float(
+        np.mean(pressure_pa)
+    )
+
+    # --------------------------------------------------------
+    # Check for frozen / near-constant pressure
+    # --------------------------------------------------------
+
+    pressure_std_pa = float(
+        np.std(pressure_pa)
+    )
+
+    if len(pressure_pa) > 1:
+        pressure_frozen_fraction = float(
+            np.mean(
+                np.diff(pressure_pa) == 0
+            )
+        )
+    else:
+        pressure_frozen_fraction = np.nan
+
+    # Reject only essentially completely frozen records.
+    # Do not use a large arbitrary std threshold because repeated
+    # pressure values can legitimately occur due to quantization.
+    if (
+        not np.isfinite(pressure_std_pa)
+        or pressure_std_pa <= 0
+        or (
+            np.isfinite(pressure_frozen_fraction)
+            and pressure_frozen_fraction > 0.99
+        )
+    ):
+        statistics_records.append(
+            rejected_record(
+                "frozen or near-constant pressure signal",
+                mean_pressure_pa=mean_pressure_pa,
+                pressure_std_pa=pressure_std_pa,
+                pressure_frozen_fraction=
+                    pressure_frozen_fraction,
+            )
+        )
+        continue
+
+    # --------------------------------------------------------
+    # Convert pressure to pressure head and water depth
+    # --------------------------------------------------------
+
     pressure_head_m = (
         pressure_pa
         / (rho_water_kg_m3 * gravity_m_s2)
@@ -894,11 +1002,21 @@ for analysis_block_number, block in enumerate(analysis_blocks):
     )
 
     # Hydrostatic relation:
+    #
     # P/(rho*g) = h - z_sensor
+    #
+    # therefore:
+    #
+    # h = P/(rho*g) + z_sensor
+
     mean_water_depth_m = (
         mean_pressure_head_m
         + z_pressure_m
     )
+
+    # --------------------------------------------------------
+    # Water-depth QC
+    # --------------------------------------------------------
 
     if (
         not np.isfinite(mean_water_depth_m)
@@ -906,61 +1024,48 @@ for analysis_block_number, block in enumerate(analysis_blocks):
         or mean_water_depth_m <= z_pressure_m
     ):
         statistics_records.append(
-            {
-                **base_record,
-                "accepted": False,
-                "rejection_reason":
-                    "invalid estimated mean water depth",
-                "mean_pressure_pa": mean_pressure_pa,
-                "mean_pressure_head_m": mean_pressure_head_m,
-                "mean_water_depth_m": mean_water_depth_m,
-                "ig_variance_m2": np.nan,
-                "ss_variance_m2": np.nan,
-                "ss_common_fc_variance_m2": np.nan,
-                "hm0_ig_m": np.nan,
-                "hm0_ss_m": np.nan,
-                "hm0_ss_common_fc_m": np.nan,
-                "common_ss_high_hz": common_ss_high_hz,
-                "common_fc_reliable": False,
-                "ig_to_ss_variance_ratio": np.nan,
-                "ig_effective_high_hz": np.nan,
-                "ss_effective_high_hz": np.nan,
-                "max_reliable_frequency_hz": np.nan,
-            }
-        )
-        continue
-    
-    # Deployment-specific QC:
-    # reject pressure offsets that imply an implausible depth.
-    if (
-    abs(mean_water_depth_m - expected_water_depth_m) > maximum_depth_deviation_m
-    ):
-        statistics_records.append(
-            {
-                **base_record,
-                "accepted": False,
-                "rejection_reason":
-                    "implausible mean water depth",
-                "mean_pressure_pa": mean_pressure_pa,
-                "mean_pressure_head_m": mean_pressure_head_m,
-                "mean_water_depth_m": mean_water_depth_m,
-                "ig_variance_m2": np.nan,
-                "ss_variance_m2": np.nan,
-                "ss_common_fc_variance_m2": np.nan,
-                "hm0_ig_m": np.nan,
-                "hm0_ss_m": np.nan,
-                "hm0_ss_common_fc_m": np.nan,
-                "common_ss_high_hz": common_ss_high_hz,
-                "common_fc_reliable": False,
-                "ig_to_ss_variance_ratio": np.nan,
-                "ig_effective_high_hz": np.nan,
-                "ss_effective_high_hz": np.nan,
-                "max_reliable_frequency_hz": np.nan,
-            }
+            rejected_record(
+                "invalid estimated mean water depth",
+                mean_pressure_pa=mean_pressure_pa,
+                mean_pressure_head_m=
+                    mean_pressure_head_m,
+                mean_water_depth_m=
+                    mean_water_depth_m,
+                pressure_std_pa=
+                    pressure_std_pa,
+                pressure_frozen_fraction=
+                    pressure_frozen_fraction,
+            )
         )
         continue
 
-    # Remove tide, surge, and slow water-level variation.
+    if (
+        abs(
+            mean_water_depth_m
+            - expected_water_depth_m
+        )
+        > maximum_depth_deviation_m
+    ):
+        statistics_records.append(
+            rejected_record(
+                "implausible mean water depth",
+                mean_pressure_pa=mean_pressure_pa,
+                mean_pressure_head_m=
+                    mean_pressure_head_m,
+                mean_water_depth_m=
+                    mean_water_depth_m,
+                pressure_std_pa=
+                    pressure_std_pa,
+                pressure_frozen_fraction=
+                    pressure_frozen_fraction,
+            )
+        )
+        continue
+
+    # --------------------------------------------------------
+    # Detrend pressure head
+    # --------------------------------------------------------
+
     pressure_head_anomaly, pressure_head_background = (
         polynomial_detrend(
             pressure_head_m,
@@ -968,12 +1073,24 @@ for analysis_block_number, block in enumerate(analysis_blocks):
         )
     )
 
-    frequency, pressure_head_psd = calculate_autospectrum(
-        values=pressure_head_anomaly,
-        fs=fs,
-        segment_seconds=welch_segment_seconds,
-        overlap_fraction=overlap_fraction,
+    # --------------------------------------------------------
+    # Calculate pressure-head PSD
+    # --------------------------------------------------------
+
+    frequency, pressure_head_psd = (
+        calculate_autospectrum(
+            values=pressure_head_anomaly,
+            fs=fs,
+            segment_seconds=
+                welch_segment_seconds,
+            overlap_fraction=
+                overlap_fraction,
+        )
     )
+
+    # --------------------------------------------------------
+    # Convert pressure PSD to surface-elevation PSD
+    # --------------------------------------------------------
 
     (
         eta_psd,
@@ -983,12 +1100,20 @@ for analysis_block_number, block in enumerate(analysis_blocks):
         wavenumber,
     ) = pressure_to_surface_spectrum(
         frequency=frequency,
-        pressure_head_psd=pressure_head_psd,
-        water_depth_m=mean_water_depth_m,
-        sensor_height_above_bed_m=z_pressure_m,
+        pressure_head_psd=
+            pressure_head_psd,
+        water_depth_m=
+            mean_water_depth_m,
+        sensor_height_above_bed_m=
+            z_pressure_m,
         gravity=gravity_m_s2,
-        maximum_amplitude_gain=max_pressure_amplitude_gain,
+        maximum_amplitude_gain=
+            max_pressure_amplitude_gain,
     )
+
+    # --------------------------------------------------------
+    # Determine reliable frequency limits
+    # --------------------------------------------------------
 
     ig_effective_high_hz = (
         contiguous_reliable_upper_frequency(
@@ -1018,34 +1143,57 @@ for analysis_block_number, block in enumerate(analysis_blocks):
         else np.nan
     )
 
+    # --------------------------------------------------------
+    # Integrate IG variance
+    # --------------------------------------------------------
+
     ig_variance_m2 = (
         integrate_spectral_band(
             frequency,
             eta_psd,
             ig_low_hz,
-            min(ig_high_hz, ig_effective_high_hz),
+            min(
+                ig_high_hz,
+                ig_effective_high_hz,
+            ),
         )
-        if np.isfinite(ig_effective_high_hz)
+        if np.isfinite(
+            ig_effective_high_hz
+        )
         else np.nan
     )
+
+    # --------------------------------------------------------
+    # Integrate pressure-recoverable SS variance
+    # --------------------------------------------------------
 
     ss_variance_m2 = (
         integrate_spectral_band(
             frequency,
             eta_psd,
             ss_low_hz,
-            min(ss_high_hz, ss_effective_high_hz),
+            min(
+                ss_high_hz,
+                ss_effective_high_hz,
+            ),
         )
-        if np.isfinite(ss_effective_high_hz)
+        if np.isfinite(
+            ss_effective_high_hz
+        )
         else np.nan
     )
 
-    # Sea-swell variance over the fixed common band used to compare frames.
-    # It is accepted only when the gain-limited reliable interval reaches the
-    # complete common band.
+    # --------------------------------------------------------
+    # Common SS cutoff
+    # --------------------------------------------------------
+
     common_fc_reliable = (
-        np.isfinite(ss_effective_high_hz)
-        and ss_effective_high_hz >= common_ss_high_hz
+        np.isfinite(
+            ss_effective_high_hz
+        )
+        and
+        ss_effective_high_hz
+        >= common_ss_high_hz
     )
 
     ss_common_fc_variance_m2 = (
@@ -1059,26 +1207,72 @@ for analysis_block_number, block in enumerate(analysis_blocks):
         else np.nan
     )
 
+    # --------------------------------------------------------
+    # Spectral QC
+    #
+    # A physically useful accepted block should not produce
+    # zero/negative IG variance.
+    # --------------------------------------------------------
+
+    if (
+        not np.isfinite(ig_variance_m2)
+        or ig_variance_m2 <= 0
+    ):
+        statistics_records.append(
+            rejected_record(
+                "invalid or nonpositive IG spectral variance",
+                mean_pressure_pa=mean_pressure_pa,
+                mean_pressure_head_m=
+                    mean_pressure_head_m,
+                mean_water_depth_m=
+                    mean_water_depth_m,
+                pressure_std_pa=
+                    pressure_std_pa,
+                pressure_frozen_fraction=
+                    pressure_frozen_fraction,
+            )
+        )
+        continue
+
+    # --------------------------------------------------------
+    # Significant spectral wave heights
+    # --------------------------------------------------------
+
     hm0_ig_m = (
         4.0 * np.sqrt(ig_variance_m2)
-        if np.isfinite(ig_variance_m2)
-        else np.nan
     )
 
     hm0_ss_m = (
         4.0 * np.sqrt(ss_variance_m2)
-        if np.isfinite(ss_variance_m2)
+        if (
+            np.isfinite(ss_variance_m2)
+            and ss_variance_m2 > 0
+        )
         else np.nan
     )
 
     hm0_ss_common_fc_m = (
-        4.0 * np.sqrt(ss_common_fc_variance_m2)
-        if np.isfinite(ss_common_fc_variance_m2)
+        4.0
+        * np.sqrt(
+            ss_common_fc_variance_m2
+        )
+        if (
+            np.isfinite(
+                ss_common_fc_variance_m2
+            )
+            and
+            ss_common_fc_variance_m2 > 0
+        )
         else np.nan
     )
 
+    # --------------------------------------------------------
+    # Variance ratios
+    # --------------------------------------------------------
+
     ig_to_ss_variance_ratio = (
-        ig_variance_m2 / ss_variance_m2
+        ig_variance_m2
+        / ss_variance_m2
         if (
             np.isfinite(ss_variance_m2)
             and ss_variance_m2 > 0
@@ -1087,31 +1281,53 @@ for analysis_block_number, block in enumerate(analysis_blocks):
     )
 
     ig_to_ss_common_fc_variance_ratio = (
-        ig_variance_m2 / ss_common_fc_variance_m2
+        ig_variance_m2
+        / ss_common_fc_variance_m2
         if (
-            np.isfinite(ss_common_fc_variance_m2)
-            and ss_common_fc_variance_m2 > 0
+            np.isfinite(
+                ss_common_fc_variance_m2
+            )
+            and
+            ss_common_fc_variance_m2 > 0
         )
         else np.nan
     )
+
+    # --------------------------------------------------------
+    # Save accepted block statistics
+    # --------------------------------------------------------
 
     statistics_records.append(
         {
             **base_record,
             "accepted": True,
             "rejection_reason": "",
-            "mean_pressure_pa": mean_pressure_pa,
-            "mean_pressure_head_m": mean_pressure_head_m,
-            "mean_water_depth_m": mean_water_depth_m,
-            "ig_variance_m2": ig_variance_m2,
-            "ss_variance_m2": ss_variance_m2,
+            "mean_pressure_pa":
+                mean_pressure_pa,
+            "mean_pressure_head_m":
+                mean_pressure_head_m,
+            "mean_water_depth_m":
+                mean_water_depth_m,
+            "pressure_std_pa":
+                pressure_std_pa,
+            "pressure_frozen_fraction":
+                pressure_frozen_fraction,
+            "ig_variance_m2":
+                ig_variance_m2,
+            "ss_variance_m2":
+                ss_variance_m2,
             "ss_common_fc_variance_m2":
                 ss_common_fc_variance_m2,
-            "hm0_ig_m": hm0_ig_m,
-            "hm0_ss_m": hm0_ss_m,
-            "hm0_ss_common_fc_m": hm0_ss_common_fc_m,
-            "common_ss_high_hz": common_ss_high_hz,
-            "common_fc_reliable": common_fc_reliable,
+            "hm0_ig_m":
+                hm0_ig_m,
+            "hm0_ss_m":
+                hm0_ss_m,
+            "hm0_ss_common_fc_m":
+                hm0_ss_common_fc_m,
+            "common_ss_high_hz":
+                common_ss_high_hz,
+            "common_fc_reliable":
+                common_fc_reliable,
             "ig_to_ss_variance_ratio":
                 ig_to_ss_variance_ratio,
             "ig_to_ss_common_fc_variance_ratio":
@@ -1124,6 +1340,10 @@ for analysis_block_number, block in enumerate(analysis_blocks):
                 max_reliable_frequency_hz,
         }
     )
+
+    # --------------------------------------------------------
+    # Save spectrum
+    # --------------------------------------------------------
 
     spectral_records.append(
         pd.DataFrame(
@@ -1157,7 +1377,6 @@ for analysis_block_number, block in enumerate(analysis_blocks):
             }
         )
     )
-
 
 # ============================================================
 # SAVE RESULTS
