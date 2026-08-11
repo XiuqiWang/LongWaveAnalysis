@@ -30,6 +30,7 @@ input_file = Path(
 )
 
 Case = "DVN F3 ADV05"
+case_id = "DVN_F3_ADV05"
 
 output_folder = Path(
     r"C:\dev\Python\LongWaveAnalysis\Spectra"
@@ -61,6 +62,9 @@ ss_high_hz = 1.0
 minimum_valid_fraction = 0.98
 
 plot_first_valid_block = True
+
+# to remove blocks with little velocity variation
+minimum_velocity_std_m_s = 1e-4
 
 
 # ============================================================
@@ -432,9 +436,11 @@ spectral_records = []
 first_valid_spectrum = None
 accepted_block_number = 0
 
+
 for analysis_block_number, block in enumerate(
     analysis_blocks
 ):
+
     start_time = block["time"].iloc[0]
     end_time = block["time"].iloc[-1]
 
@@ -447,7 +453,16 @@ for analysis_block_number, block in enumerate(
     )
 
     sample_count = len(block)
-    duration_minutes = sample_count / fs / 60.0
+
+    duration_minutes = (
+        sample_count
+        / fs
+        / 60.0
+    )
+
+    # ========================================================
+    # FIRST QC: MISSING VALUES / BLOCK LENGTH
+    # ========================================================
 
     valid_mask = (
         block[
@@ -462,20 +477,20 @@ for analysis_block_number, block in enumerate(
 
     valid_fraction = valid_mask.mean()
 
-    accepted = (
-        valid_fraction >= minimum_valid_fraction
-        and sample_count >= minimum_block_samples
-    )
-
     rejection_reason = ""
 
     if sample_count < minimum_block_samples:
-        rejection_reason = "analysis block too short"
+        rejection_reason = (
+            "analysis block too short"
+        )
 
     elif valid_fraction < minimum_valid_fraction:
-        rejection_reason = "too many missing velocity samples"
+        rejection_reason = (
+            "too many missing velocity samples"
+        )
 
-    if not accepted:
+    if rejection_reason:
+
         statistics_records.append(
             {
                 "analysis_block_number":
@@ -518,64 +533,181 @@ for analysis_block_number, block in enumerate(
                     np.nan,
                 "cross_ig_ss_ratio":
                     np.nan,
+                "mean_cross_current":
+                    np.nan,
+                "mean_along_current":
+                    np.nan,
+                "cross_velocity_std":
+                    np.nan,
+                "along_velocity_std":
+                    np.nan,
             }
         )
 
         continue
 
-    # Interpolate isolated missing samples within an accepted burst.
+
+    # ========================================================
+    # INTERPOLATE SMALL GAPS
+    # ========================================================
+
     cross_raw = (
         block["cross_shore"]
         .interpolate(
             method="linear",
             limit_direction="both",
         )
-        .to_numpy(dtype=np.float64)
+        .to_numpy(
+            dtype=np.float64
+        )
     )
-    
+
     along_raw = (
         block["alongshore"]
         .interpolate(
             method="linear",
             limit_direction="both",
         )
-        .to_numpy(dtype=np.float64)
+        .to_numpy(
+            dtype=np.float64
+        )
     )
 
-    # Retain the average current before detrending.
-    mean_cross_current = np.mean(cross_raw)
-    mean_along_current = np.mean(along_raw)
-    
-    # Remove a quadratic background from the complete burst.
+
+    # ========================================================
+    # BASIC RAW-VELOCITY STATISTICS
+    # ========================================================
+
+    mean_cross_current = float(
+        np.mean(cross_raw)
+    )
+
+    mean_along_current = float(
+        np.mean(along_raw)
+    )
+
+    cross_std = float(
+        np.std(cross_raw)
+    )
+
+    along_std = float(
+        np.std(along_raw)
+    )
+
+
+    # ========================================================
+    # SECOND QC: FROZEN / NEAR-CONSTANT SIGNAL
+    # ========================================================
+
+    if (
+        not np.isfinite(cross_std)
+        or not np.isfinite(along_std)
+        or cross_std < minimum_velocity_std_m_s
+        or along_std < minimum_velocity_std_m_s
+    ):
+
+        statistics_records.append(
+            {
+                "analysis_block_number":
+                    analysis_block_number,
+                "source_segment_id":
+                    source_segment_id,
+                "subblock_number":
+                    subblock_number,
+                "start_time":
+                    start_time,
+                "end_time":
+                    end_time,
+                "sample_count":
+                    sample_count,
+                "duration_minutes":
+                    duration_minutes,
+                "valid_fraction":
+                    valid_fraction,
+                "accepted":
+                    False,
+                "rejection_reason":
+                    "frozen or near-constant velocity signal",
+                "cross_ig_variance":
+                    np.nan,
+                "along_ig_variance":
+                    np.nan,
+                "cross_ss_variance":
+                    np.nan,
+                "along_ss_variance":
+                    np.nan,
+                "cross_ig_rms":
+                    np.nan,
+                "along_ig_rms":
+                    np.nan,
+                "cross_ss_rms":
+                    np.nan,
+                "along_ss_rms":
+                    np.nan,
+                "cross_along_ig_ratio":
+                    np.nan,
+                "cross_ig_ss_ratio":
+                    np.nan,
+                "mean_cross_current":
+                    mean_cross_current,
+                "mean_along_current":
+                    mean_along_current,
+                "cross_velocity_std":
+                    cross_std,
+                "along_velocity_std":
+                    along_std,
+            }
+        )
+
+        continue
+
+
+    # ========================================================
+    # DETREND VELOCITY
+    # ========================================================
+
     cross, cross_background = polynomial_detrend(
         cross_raw,
         order=2,
     )
-    
+
     along, along_background = polynomial_detrend(
         along_raw,
         order=2,
     )
-    
-    # how much the fitted background current changes through each burst
+
+
     cross_background_change = (
         cross_background[-1]
         - cross_background[0]
     )
-    
+
     along_background_change = (
         along_background[-1]
         - along_background[0]
     )
 
-    # Calculate PSD from already detrended signals.
-    frequency, cross_psd, along_psd = calculate_autospectra(
+
+    # ========================================================
+    # WELCH AUTOSPECTRA
+    # ========================================================
+
+    (
+        frequency,
+        cross_psd,
+        along_psd,
+    ) = calculate_autospectra(
         cross_shore=cross,
         alongshore=along,
         fs=fs,
         segment_seconds=segment_seconds,
         overlap_fraction=overlap_fraction,
     )
+
+
+    # ========================================================
+    # BAND-INTEGRATED VARIANCES
+    # ========================================================
 
     cross_ig_variance = integrate_spectral_band(
         frequency,
@@ -605,33 +737,134 @@ for analysis_block_number, block in enumerate(
         ss_high_hz,
     )
 
-    cross_ig_rms = np.sqrt(cross_ig_variance)
-    along_ig_rms = np.sqrt(along_ig_variance)
 
-    cross_ss_rms = np.sqrt(cross_ss_variance)
-    along_ss_rms = np.sqrt(along_ss_variance)
+    # ========================================================
+    # THIRD QC: INVALID / ZERO SPECTRAL VARIANCE
+    # ========================================================
+
+    variances = np.asarray(
+        [
+            cross_ig_variance,
+            along_ig_variance,
+            cross_ss_variance,
+            along_ss_variance,
+        ],
+        dtype=float,
+    )
 
     if (
-        np.isfinite(along_ig_variance)
-        and along_ig_variance > 0
+        not np.isfinite(variances).all()
+        or np.any(variances <= 0)
     ):
+
+        statistics_records.append(
+            {
+                "analysis_block_number":
+                    analysis_block_number,
+                "source_segment_id":
+                    source_segment_id,
+                "subblock_number":
+                    subblock_number,
+                "start_time":
+                    start_time,
+                "end_time":
+                    end_time,
+                "sample_count":
+                    sample_count,
+                "duration_minutes":
+                    duration_minutes,
+                "valid_fraction":
+                    valid_fraction,
+                "accepted":
+                    False,
+                "rejection_reason":
+                    "nonpositive or invalid spectral variance",
+                "cross_ig_variance":
+                    cross_ig_variance,
+                "along_ig_variance":
+                    along_ig_variance,
+                "cross_ss_variance":
+                    cross_ss_variance,
+                "along_ss_variance":
+                    along_ss_variance,
+                "cross_ig_rms":
+                    np.nan,
+                "along_ig_rms":
+                    np.nan,
+                "cross_ss_rms":
+                    np.nan,
+                "along_ss_rms":
+                    np.nan,
+                "cross_along_ig_ratio":
+                    np.nan,
+                "cross_ig_ss_ratio":
+                    np.nan,
+                "mean_cross_current":
+                    mean_cross_current,
+                "mean_along_current":
+                    mean_along_current,
+                "cross_velocity_std":
+                    cross_std,
+                "along_velocity_std":
+                    along_std,
+            }
+        )
+
+        continue
+
+
+    # ========================================================
+    # RMS VELOCITIES
+    # ========================================================
+
+    cross_ig_rms = np.sqrt(
+        cross_ig_variance
+    )
+
+    along_ig_rms = np.sqrt(
+        along_ig_variance
+    )
+
+    cross_ss_rms = np.sqrt(
+        cross_ss_variance
+    )
+
+    along_ss_rms = np.sqrt(
+        along_ss_variance
+    )
+
+
+    # ========================================================
+    # VARIANCE RATIOS
+    # ========================================================
+
+    if along_ig_variance > 0:
+
         cross_along_ig_ratio = (
             cross_ig_variance
             / along_ig_variance
         )
+
     else:
+
         cross_along_ig_ratio = np.nan
 
-    if (
-        np.isfinite(cross_ss_variance)
-        and cross_ss_variance > 0
-    ):
+
+    if cross_ss_variance > 0:
+
         cross_ig_ss_ratio = (
             cross_ig_variance
             / cross_ss_variance
         )
+
     else:
+
         cross_ig_ss_ratio = np.nan
+
+
+    # ========================================================
+    # SAVE ACCEPTED-BLOCK STATISTICS
+    # ========================================================
 
     statistics_records.append(
         {
@@ -675,12 +908,25 @@ for analysis_block_number, block in enumerate(
                 cross_along_ig_ratio,
             "cross_ig_ss_ratio":
                 cross_ig_ss_ratio,
-            "mean_cross_current": 
+            "mean_cross_current":
                 mean_cross_current,
-            "mean_along_current": 
+            "mean_along_current":
                 mean_along_current,
+            "cross_velocity_std":
+                cross_std,
+            "along_velocity_std":
+                along_std,
+            "cross_background_change":
+                cross_background_change,
+            "along_background_change":
+                along_background_change,
         }
     )
+
+
+    # ========================================================
+    # SAVE FULL SPECTRUM
+    # ========================================================
 
     block_spectrum = pd.DataFrame(
         {
@@ -703,10 +949,14 @@ for analysis_block_number, block in enumerate(
         }
     )
 
-    spectral_records.append(block_spectrum)
+    spectral_records.append(
+        block_spectrum
+    )
 
     if first_valid_spectrum is None:
-        first_valid_spectrum = block_spectrum.copy()
+        first_valid_spectrum = (
+            block_spectrum.copy()
+        )
 
     accepted_block_number += 1
 
@@ -732,38 +982,76 @@ statistics_file = (
     / f"{Case}""_burst_spectral_statistics.csv"
 )
 
-spectra_file = (
-    output_folder
-    / f"{Case}""_burst_velocity_spectra.pkl"
-)
-
-segment_file = (
-    output_folder
-    / f"{Case}""_segment_summary.csv"
-)
+# spectra_file = (
+#     output_folder
+#     / f"{Case}""_burst_velocity_spectra.pkl"
+# )
 
 statistics.to_csv(
     statistics_file,
     index=False,
 )
 
-spectra.to_pickle(
-    spectra_file,
+# spectra.to_pickle(
+#     spectra_file,
+# )
+
+# One shared, long-format table for comparison across all cases.
+# Re-running a case replaces that case's existing rows rather than duplicating
+# them.
+velocityRMS_file = (
+    output_folder
+    / "all_cases_velocityRMS.csv"
 )
 
-segment_summary.to_csv(
-    segment_file,
-    index=False,
-)
+comparison_columns = [
+    "case_id",
+    "analysis_block_number",
+    "start_time",
+    "end_time",
+    "mid_time",
+    "cross_ig_rms",
+    "along_ig_rms",
+    "cross_ss_rms",
+    "along_ss_rms"
+]
 
-print("\nSaved segment summary:")
-print(segment_file)
+comparison = statistics.loc[statistics["accepted"]].copy()
+comparison["mid_time"] = (
+    comparison["start_time"]
+    + (comparison["end_time"] - comparison["start_time"]) / 2
+)
+comparison["case_id"] = case_id
+comparison = comparison[comparison_columns]
+
+if velocityRMS_file.exists():
+    existing_comparison = pd.read_csv(
+        velocityRMS_file,
+        parse_dates=["start_time", "end_time", "mid_time"],
+    )
+    if "case_id" not in existing_comparison.columns:
+        raise KeyError(
+            f"Existing shared file lacks case_id: {velocityRMS_file}"
+        )
+    existing_comparison = existing_comparison.loc[
+        existing_comparison["case_id"] != case_id
+    ]
+    comparison = pd.concat(
+        [existing_comparison, comparison],
+        ignore_index=True,
+    )
+
+comparison = comparison.sort_values(
+    ["case_id", "start_time", "analysis_block_number"]
+)
+comparison.to_csv(velocityRMS_file, index=False)
+
 
 print("\nSaved spectral statistics:")
 print(statistics_file)
 
-print("\nSaved spectra:")
-print(spectra_file)
+# print("\nSaved spectra:")
+# print(spectra_file)
 
 print("\nAccepted blocks:")
 print(statistics["accepted"].sum())
@@ -772,60 +1060,60 @@ print("Rejected blocks:")
 print((~statistics["accepted"]).sum())
 
 
-# # ============================================================
-# # PLOT FIRST ACCEPTED BURST
-# # ============================================================
-# if (
-#     plot_first_valid_block
-#     and first_valid_spectrum is not None
-# ):
-#     positive = (
-#         first_valid_spectrum["frequency_hz"] > 0
-#     )
+# ============================================================
+# PLOT FIRST ACCEPTED BURST
+# ============================================================
+if (
+    plot_first_valid_block
+    and first_valid_spectrum is not None
+):
+    positive = (
+        first_valid_spectrum["frequency_hz"] > 0
+    )
 
-#     plot_data = first_valid_spectrum.loc[
-#         positive
-#     ]
+    plot_data = first_valid_spectrum.loc[
+        positive
+    ]
 
-#     plt.figure(figsize=(9, 6))
+    plt.figure(figsize=(9, 6))
 
-#     plt.loglog(
-#         plot_data["frequency_hz"],
-#         plot_data["cross_psd"],
-#         label="Cross-shore",
-#     )
+    plt.loglog(
+        plot_data["frequency_hz"],
+        plot_data["cross_psd"],
+        label="Cross-shore",
+    )
 
-#     plt.loglog(
-#         plot_data["frequency_hz"],
-#         plot_data["along_psd"],
-#         label="Alongshore",
-#     )
+    plt.loglog(
+        plot_data["frequency_hz"],
+        plot_data["along_psd"],
+        label="Alongshore",
+    )
 
-#     plt.axvspan(
-#         ig_low_hz,
-#         ig_high_hz,
-#         alpha=0.20,
-#         label="IG band",
-#     )
+    plt.axvspan(
+        ig_low_hz,
+        ig_high_hz,
+        alpha=0.20,
+        label="IG band",
+    )
 
-#     plt.axvspan(
-#         ss_low_hz,
-#         ss_high_hz,
-#         alpha=0.10,
-#         label="Sea-swell band",
-#     )
+    plt.axvspan(
+        ss_low_hz,
+        ss_high_hz,
+        alpha=0.10,
+        label="Sea-swell band",
+    )
 
-#     plt.xlabel("Frequency (Hz)")
-#     plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
 
-#     plt.title(
-#         "ADV01 horizontal velocity autospectra\n"
-#         f"{first_valid_spectrum['start_time'].iloc[0]}"
-#     )
+    plt.title(
+        "ADV01 horizontal velocity autospectra\n"
+        f"{first_valid_spectrum['start_time'].iloc[0]}"
+    )
 
-#     plt.legend()
-#     plt.tight_layout()
-#     plt.show()
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
     
 # ========================================
 # Evaluate statistics
@@ -898,6 +1186,37 @@ plt.plot(
 )
 plt.xlabel("Time")
 plt.ylabel("IG velocity RMS (m/s)")
+plt.ylim(0,0.055)
+plt.title(f"{Case}")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+accepted["cross_ss_rms_plot"] = accepted["cross_ss_rms"]
+accepted["along_ss_rms_plot"] = accepted["along_ss_rms"]
+
+accepted.loc[
+    large_gap,
+    [
+        "cross_ss_rms_plot",
+        "along_ss_rms_plot",
+    ],
+] = np.nan
+
+plt.figure(figsize=(12, 5))
+plt.plot(
+    accepted["mid_time"],
+    accepted["cross_ss_rms_plot"],
+    label="Cross-shore Sea-Swell RMS",
+)
+plt.plot(
+    accepted["mid_time"],
+    accepted["along_ss_rms_plot"],
+    label="Alongshore Sea-Swell RMS",
+)
+plt.xlabel("Time")
+plt.ylabel("Sea-Swell velocity RMS (m/s)")
+plt.ylim(bottom=0)
 plt.title(f"{Case}")
 plt.legend()
 plt.tight_layout()
@@ -1062,6 +1381,7 @@ plt.axvspan(0.05, 1.00, alpha=0.10, label="Sea swell band")
 
 plt.xlabel("Frequency (Hz)")
 plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
+plt.ylim(1e-6, 3e-1)
 plt.title("Median velocity autospectra " f"({Case})")
 plt.legend()
 plt.tight_layout()
@@ -1115,6 +1435,7 @@ plt.axvspan(
 
 plt.xlabel("Frequency (Hz)")
 plt.ylabel(r"Velocity PSD ((m/s)$^2$/Hz)")
+plt.ylim(1e-6, 3e-1)
 plt.title("Mean velocity autospectra " f"({Case})")
 
 plt.legend()
