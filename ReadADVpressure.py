@@ -28,9 +28,9 @@ import pandas as pd
 # ============================================================
 file_path = Path(
     r"C:\dev\Python\LongWaveAnalysis\ADV"
-    r"\pressure_adv_dvn_201804_F3.nc"
+    r"\pressure_adv_dvn_201804_F1.nc"
 )
-case_id = "F3_ADV05"
+case_id = "F1_ADV01"
 
 # Select the P_APC instrument column.
 # The corresponding instrument name and pressure height

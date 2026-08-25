@@ -15,6 +15,15 @@ import h5py
 import numpy as np
 import pandas as pd
 
+#user settings
+file_path = (
+    r"C:\dev\Python\LongWaveAnalysis\ADV"
+    r"\adv_dvn_201804_F3.nc"
+)
+
+case_id = "F3_ADV05"
+Column = 0
+
 def _scalar_attribute(dataset, name, default):
     value = dataset.attrs.get(name, default)
     return float(np.asarray(value).squeeze())
@@ -108,11 +117,14 @@ def _read_velocity_chunked(
                 }
             )
 
-            # Stop at first unreadable block
-            return (
-                output[:destination_start],
-                failures,
-            )
+            # # Stop at first unreadable block
+            # return (
+            #     output[:destination_start],
+            #     failures,
+            # )
+            # Failed section remains NaN.
+            # Continue testing later blocks.
+            continue
 
     # IMPORTANT:
     # This return is OUTSIDE the for-loop.
@@ -130,7 +142,7 @@ def read_adv_block_chunked(
     include_up=False,
 ):
     """
-    Read ADV01 only from a KG2 ADV file.
+    Read ADV only from a KG2 ADV file.
 
     ADV01:
         NetCDF column = 0
@@ -141,9 +153,9 @@ def read_adv_block_chunked(
     Returns
     -------
     result : pandas.DataFrame
-        Time and ADV01 physical velocities in m/s.
+        Time and ADV physical velocities in m/s.
     failures : list[dict]
-        Unreadable ADV01 variable/index ranges.
+        Unreadable ADV variable/index ranges.
     """
     file_path = Path(file_path)
 
@@ -634,16 +646,6 @@ def rotate_enu_to_cross_along(
 
     return cross_shore, alongshore, metadata
 
-
-file_path = (
-    r"C:\dev\Python\LongWaveAnalysis\ADV"
-    r"\adv_dvn_201804_F3.nc"
-)
-
-Column = 0
-instrument_name = "ADV05"
-height = 0.49
-
 #find the first active velocity time
 index, timestamp, diagnostics = find_first_active_window(
     file_path=file_path,
@@ -665,21 +667,36 @@ with h5py.File(file_path, "r") as f:
         time_ds=f["time"],
         target_time=target_time_stop,
     )
+    
+    instruments = [
+        value.decode()
+        if isinstance(value, bytes)
+        else str(value)
+        for value in f["instrument"][...]
+    ]
+    heights = (f["Z_vel"][...].astype(float))
+    file_instrument = (
+        instruments[Column]
+    )
+
+    file_height = float(
+        heights[Column]
+    )
 
 start = index
 
 df, failures = read_adv_block_chunked(
     file_path=file_path,
     adv_column=Column,
-    instrument=instrument_name,
-    z_velocity_m=height,
+    instrument=file_instrument,
+    z_velocity_m=file_height,
     start_index=start,
     stop_index=stop,
     block_samples=100_000,
     include_up=False,
 )
 
-print("\nExtracted " f"{instrument_name}" " data")
+print("\nExtracted " f"{file_instrument}" " data")
 print("Start:", df["time"].iloc[0])
 print("End:", df["time"].iloc[-1])
 print("Rows:", len(df))
@@ -687,34 +704,46 @@ print("Rows:", len(df))
 print("\nMissing values before rotation:")
 print(df.isna().sum())
 
-# print("\nUnreadable blocks:")
-# for failure in failures:
-#     print(failure)
+print("\nUnreadable blocks:")
+for failure in failures:
+    print(failure)
 
 # Where the failed data is
-# failures = add_failure_times(
-#     failures,
-#     file_path,
-# )
+failures = add_failure_times(
+    failures,
+    file_path,
+)
 
-# for failure in failures:
-#     print(
-#         failure["variable"],
-#         failure["instrument"],
-#         failure["start_time_utc"],
-#         "to",
-#         failure["end_time_utc"],
-#     )
+for failure in failures:
+    print(
+        failure["variable"],
+        failure["instrument"],
+        failure["start_time_utc"],
+        "to",
+        failure["end_time_utc"],
+    )
 
 # Coordinates of the selected transect points
 nearshore_point = (52.23317, 4.3873215) #DVN3
 offshore_point = (52.28087, 4.2432895) #DVN1
 
 # Rotate velocity
+east_column = next(
+    column
+    for column in df.columns
+    if column.startswith("east_")
+)
+
+north_column = next(
+    column
+    for column in df.columns
+    if column.startswith("north_")
+)
+
 df["cross_shore"], df["alongshore"], rotation_info = (
     rotate_enu_to_cross_along(
-        east=df["east_ADV05_49cm"],
-        north=df["north_ADV05_49cm"],
+        east=df[east_column],
+        north=df[north_column],
         point_from=nearshore_point,
         point_to=offshore_point,
     )
@@ -758,35 +787,40 @@ for key, value in rotation_info.items():
 # print("Cross/along dot product:", dot_product)
 
 # Retain only variables relevant to ADV processing.
+columns_to_keep = [
+    column
+    for column in df.columns
+    if (
+        column == "time"
+        or column.startswith("east")
+        or column.startswith("north")
+        or column == "cross_shore"
+        or column == "alongshore"
+    )
+]
 df = df[
-    [
-        "time",
-        "east_ADV05_49cm",
-        "north_ADV05_49cm",
-        "cross_shore",
-        "alongshore",
-    ]
+    columns_to_keep
 ].copy()
 
 
-# Save processed ADV data.
-output_folder = Path(
-    r"C:\dev\Python\LongWaveAnalysis\Processed"
-)
-output_folder.mkdir(
-    parents=True,
-    exist_ok=True,
-)
+# # Save processed ADV data.
+# output_folder = Path(
+#     r"C:\dev\Python\LongWaveAnalysis\Processed"
+# )
+# output_folder.mkdir(
+#     parents=True,
+#     exist_ok=True,
+# )
 
-output_file = (
-    output_folder
-    / "ADV_F3_ADV05_rotated.parquet"
-)
+# output_file = (
+#     output_folder
+#     / "ADV_{case_id}_rotated.parquet"
+# )
 
-df.to_parquet(
-    output_file,
-    index=False,
-)
+# df.to_parquet(
+#     output_file,
+#     index=False,
+# )
 
-print("\nSaved processed ADV data to:")
-print(output_file)
+# print("\nSaved processed ADV data to:")
+# print(output_file)
