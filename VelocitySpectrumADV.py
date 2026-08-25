@@ -666,26 +666,29 @@ for analysis_block_number, block in enumerate(
     # DETREND VELOCITY
     # ========================================================
 
-    cross, cross_background = polynomial_detrend(
-        cross_raw,
-        order=2,
-    )
+    # cross, cross_background = polynomial_detrend(
+    #     cross_raw,
+    #     order=2,
+    # )
 
-    along, along_background = polynomial_detrend(
-        along_raw,
-        order=2,
-    )
+    # along, along_background = polynomial_detrend(
+    #     along_raw,
+    #     order=2,
+    # )
+    
+    cross = cross_raw
+    along = along_raw
 
 
-    cross_background_change = (
-        cross_background[-1]
-        - cross_background[0]
-    )
+    # cross_background_change = (
+    #     cross_background[-1]
+    #     - cross_background[0]
+    # )
 
-    along_background_change = (
-        along_background[-1]
-        - along_background[0]
-    )
+    # along_background_change = (
+    #     along_background[-1]
+    #     - along_background[0]
+    # )
 
 
     # ========================================================
@@ -916,10 +919,10 @@ for analysis_block_number, block in enumerate(
                 cross_std,
             "along_velocity_std":
                 along_std,
-            "cross_background_change":
-                cross_background_change,
-            "along_background_change":
-                along_background_change,
+            # "cross_background_change":
+            #     cross_background_change,
+            # "along_background_change":
+            #     along_background_change,
         }
     )
 
@@ -977,87 +980,87 @@ if spectral_records:
 else:
     spectra = pd.DataFrame()
 
-statistics_file = (
-    output_folder
-    / f"{Case}""_burst_spectral_statistics.csv"
-)
-
-# spectra_file = (
+# statistics_file = (
 #     output_folder
-#     / f"{Case}""_burst_velocity_spectra.pkl"
+#     / f"{Case}""_burst_spectral_statistics.csv"
 # )
 
-statistics.to_csv(
-    statistics_file,
-    index=False,
-)
+# # spectra_file = (
+# #     output_folder
+# #     / f"{Case}""_burst_velocity_spectra.pkl"
+# # )
 
-# spectra.to_pickle(
-#     spectra_file,
+# statistics.to_csv(
+#     statistics_file,
+#     index=False,
 # )
 
-# One shared, long-format table for comparison across all cases.
-# Re-running a case replaces that case's existing rows rather than duplicating
-# them.
-velocityRMS_file = (
-    output_folder
-    / "all_cases_velocityRMS.csv"
-)
+# # spectra.to_pickle(
+# #     spectra_file,
+# # )
 
-comparison_columns = [
-    "case_id",
-    "analysis_block_number",
-    "start_time",
-    "end_time",
-    "mid_time",
-    "cross_ig_rms",
-    "along_ig_rms",
-    "cross_ss_rms",
-    "along_ss_rms"
-]
+# # One shared, long-format table for comparison across all cases.
+# # Re-running a case replaces that case's existing rows rather than duplicating
+# # them.
+# velocityRMS_file = (
+#     output_folder
+#     / "all_cases_velocityRMS.csv"
+# )
 
-comparison = statistics.loc[statistics["accepted"]].copy()
-comparison["mid_time"] = (
-    comparison["start_time"]
-    + (comparison["end_time"] - comparison["start_time"]) / 2
-)
-comparison["case_id"] = case_id
-comparison = comparison[comparison_columns]
+# comparison_columns = [
+#     "case_id",
+#     "analysis_block_number",
+#     "start_time",
+#     "end_time",
+#     "mid_time",
+#     "cross_ig_rms",
+#     "along_ig_rms",
+#     "cross_ss_rms",
+#     "along_ss_rms"
+# ]
 
-if velocityRMS_file.exists():
-    existing_comparison = pd.read_csv(
-        velocityRMS_file,
-        parse_dates=["start_time", "end_time", "mid_time"],
-    )
-    if "case_id" not in existing_comparison.columns:
-        raise KeyError(
-            f"Existing shared file lacks case_id: {velocityRMS_file}"
-        )
-    existing_comparison = existing_comparison.loc[
-        existing_comparison["case_id"] != case_id
-    ]
-    comparison = pd.concat(
-        [existing_comparison, comparison],
-        ignore_index=True,
-    )
+# comparison = statistics.loc[statistics["accepted"]].copy()
+# comparison["mid_time"] = (
+#     comparison["start_time"]
+#     + (comparison["end_time"] - comparison["start_time"]) / 2
+# )
+# comparison["case_id"] = case_id
+# comparison = comparison[comparison_columns]
 
-comparison = comparison.sort_values(
-    ["case_id", "start_time", "analysis_block_number"]
-)
-comparison.to_csv(velocityRMS_file, index=False)
+# if velocityRMS_file.exists():
+#     existing_comparison = pd.read_csv(
+#         velocityRMS_file,
+#         parse_dates=["start_time", "end_time", "mid_time"],
+#     )
+#     if "case_id" not in existing_comparison.columns:
+#         raise KeyError(
+#             f"Existing shared file lacks case_id: {velocityRMS_file}"
+#         )
+#     existing_comparison = existing_comparison.loc[
+#         existing_comparison["case_id"] != case_id
+#     ]
+#     comparison = pd.concat(
+#         [existing_comparison, comparison],
+#         ignore_index=True,
+#     )
+
+# comparison = comparison.sort_values(
+#     ["case_id", "start_time", "analysis_block_number"]
+# )
+# comparison.to_csv(velocityRMS_file, index=False)
 
 
-print("\nSaved spectral statistics:")
-print(statistics_file)
+# print("\nSaved spectral statistics:")
+# print(statistics_file)
 
-# print("\nSaved spectra:")
-# print(spectra_file)
+# # print("\nSaved spectra:")
+# # print(spectra_file)
 
-print("\nAccepted blocks:")
-print(statistics["accepted"].sum())
+# print("\nAccepted blocks:")
+# print(statistics["accepted"].sum())
 
-print("Rejected blocks:")
-print((~statistics["accepted"]).sum())
+# print("Rejected blocks:")
+# print((~statistics["accepted"]).sum())
 
 
 # ============================================================
@@ -1216,7 +1219,7 @@ plt.plot(
 )
 plt.xlabel("Time")
 plt.ylabel("Sea-Swell velocity RMS (m/s)")
-plt.ylim(bottom=0)
+plt.ylim(0, 0.36)
 plt.title(f"{Case}")
 plt.legend()
 plt.tight_layout()
