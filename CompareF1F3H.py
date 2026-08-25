@@ -80,7 +80,7 @@ for dataset in [frame1, frame3]:
     
     dataset.loc[
         large_gap,
-        ["hm0_ig_m", "hm0_ss_common_fc_m", "ig_ss_ratio"],
+        ["hm0_ig_m", "hm0_ss_common_fc_m", "hm0_ss_m", "ig_ss_ratio"],
     ] = np.nan
 
 
@@ -105,6 +105,7 @@ plt.plot(
 
 plt.xlabel("Time")
 plt.ylabel(r"$H_{m0,IG}$ (m)")
+plt.ylim(bottom=0)
 plt.title("Infragravity wave height versus time")
 plt.grid(True, alpha=0.3)
 plt.legend()
@@ -112,26 +113,27 @@ plt.tight_layout()
 
 
 # ============================================================
-# PLOT HSS (COMMON CUTOFF)
+# PLOT HSS 
 # ============================================================
 
 plt.figure(figsize=(12,5))
 
 plt.plot(
     frame1["mid_time"],
-    frame1["hm0_ss_common_fc_m"],
+    frame1["hm0_ss_m"],
     label=frame1_label,
 )
 
 plt.plot(
     frame3["mid_time"],
-    frame3["hm0_ss_common_fc_m"],
+    frame3["hm0_ss_m"],
     label=frame3_label,
 )
 
 plt.xlabel("Time")
 plt.ylabel(r"$H_{m0,SS}$ (m)")
-plt.title("Sea-swell wave height (common cutoff) versus time")
+plt.ylim(bottom=0)
+plt.title("Sea-swell wave height (cut off at an effective fc) versus time")
 plt.grid(True, alpha=0.3)
 plt.legend()
 plt.tight_layout()
@@ -156,8 +158,9 @@ plt.plot(
 )
 
 plt.xlabel("Time")
-plt.ylabel(r"$H_{m0,IG}/H_{m0,SS}$")
-plt.title(r"$H_{m0,IG}/H_{m0,SS}$ versus time")
+plt.ylabel(r"$H_{m0,IG}/H_{m0,SS,common-fc}$")
+plt.ylim(bottom=0)
+plt.title(r"$H_{m0,IG}/H_{m0,SS,common-fc}$ versus time")
 plt.grid(True, alpha=0.3)
 plt.legend()
 plt.tight_layout()
