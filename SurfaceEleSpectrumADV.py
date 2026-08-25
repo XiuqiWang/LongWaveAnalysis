@@ -38,13 +38,13 @@ from scipy.signal import welch
 
 input_file = Path(
     r"C:\dev\Python\LongWaveAnalysis\Processed"
-    r"\Pressure_F3_ADV05_APC.parquet"
+    r"\Pressure_F1_ADV01_APC.parquet"
 )
 
-case_id = "DVN_F3_ADV05"
-case_label = "DVN F3 ADV05"
+case_id = "DVN_F1_ADV01"
+case_label = "DVN F1 ADV01"
 
-pressure_column = "pressure_apc_ADV05_90cm_pa"
+pressure_column = "pressure_apc_ADV01_90cm_pa"
 
 output_folder = Path(
     r"C:\dev\Python\LongWaveAnalysis\Spectra"
@@ -55,7 +55,7 @@ output_folder.mkdir(parents=True, exist_ok=True)
 # In the processed file each 4-Hz pressure value is repeated on the
 # synchronized 16-Hz ADV time grid.
 native_pressure_fs_hz = 4.0
-z_pressure_m = 0.90 # Change for Frame!
+z_pressure_m = 0.89 # Change for Frame!
 
 rho_water_kg_m3 = 1025.0
 gravity_m_s2 = 9.81
@@ -78,7 +78,7 @@ common_ss_high_hz = 0.185
 minimum_valid_fraction = 0.98
 minimum_block_fraction = 0.95
 minimum_water_depth_m = 0.25
-expected_water_depth_m = 12 # Change for Frame!
+expected_water_depth_m = 20 # Change for Frame!
 maximum_depth_deviation_m = 3.0
 
 detrend_order = 2
@@ -808,11 +808,13 @@ print("Analysis blocks produced:", len(analysis_blocks))
 
 statistics_records = []
 spectral_records = []
+directional_pressure_records = []
 
 for analysis_block_number, block in enumerate(analysis_blocks):
 
     start_time = block["time"].iloc[0]
     end_time = block["time"].iloc[-1]
+    mid_time = start_time + (end_time - start_time) / 2
 
     source_segment_id = int(
         block["source_segment_id"].iloc[0]
@@ -842,6 +844,8 @@ for analysis_block_number, block in enumerate(analysis_blocks):
             start_time,
         "end_time":
             end_time,
+        "mid_time":
+            mid_time,
         "sample_count":
             sample_count,
         "duration_minutes":
@@ -1234,6 +1238,30 @@ for analysis_block_number, block in enumerate(analysis_blocks):
         )
         continue
 
+    # ============================================================
+    # SAVE TIME-RESOLVED ADV PRESSURE FOR LATER
+    # PRESSURE-VELOCITY CROSS-SPECTRAL ANALYSIS
+    # ============================================================
+
+    directional_pressure_records.append(
+        pd.DataFrame({
+            "case_id": case_id,
+            "case_name": case_label,
+            "analysis_block_number": analysis_block_number,
+            "source_segment_id": source_segment_id,
+            "subblock_number": subblock_number,
+            "start_time": start_time,
+            "end_time": end_time,
+            "mid_time": mid_time,
+            "time": block["time"].to_numpy(),
+            "sensor_height_above_bed_m": z_pressure_m,
+            "mean_water_depth_m": mean_water_depth_m,
+            "pressure_corrected_pa": pressure_pa,
+            "pressure_head_m": pressure_head_m,
+            "pressure_head_detrended_m": pressure_head_anomaly,
+        })
+    )
+
     # --------------------------------------------------------
     # Significant spectral wave heights
     # --------------------------------------------------------
@@ -1379,6 +1407,16 @@ for analysis_block_number, block in enumerate(analysis_blocks):
     )
 
 # ============================================================
+# BUILD TIME-RESOLVED ADV PRESSURE TABLE
+# ============================================================
+
+directional_pressure = (
+    pd.concat(directional_pressure_records, ignore_index=True)
+    if directional_pressure_records
+    else pd.DataFrame()
+)
+
+# ============================================================
 # SAVE RESULTS
 # ============================================================
 
@@ -1502,6 +1540,139 @@ accepted["mid_time"] = (
 )
 
 accepted = accepted.sort_values("mid_time")
+
+# ============================================================
+# SAVE ADV PRESSURE FOR PRESSURE-VELOCITY ANALYSIS
+# SHARED FILE FOR F1 / F3 ADV PRESSURE
+# ============================================================
+
+directional_pressure_file = (
+    output_folder
+    / "all_cases_ADV_directional_pressure.parquet"
+)
+
+if directional_pressure.empty:
+    print(
+        "\nNo accepted ADV pressure time series "
+        "available for directional analysis."
+    )
+else:
+    if directional_pressure_file.exists():
+        old = pd.read_parquet(directional_pressure_file)
+        if "case_id" not in old.columns:
+            raise KeyError(
+                "Existing ADV directional-pressure file "
+                "does not contain case_id."
+            )
+        old = old.loc[old["case_id"] != case_id]
+        directional_pressure = pd.concat(
+            [old, directional_pressure],
+            ignore_index=True,
+        )
+
+    directional_pressure = (
+        directional_pressure
+        .sort_values(["case_id", "time", "analysis_block_number"])
+        .reset_index(drop=True)
+    )
+    directional_pressure.to_parquet(
+        directional_pressure_file,
+        index=False,
+    )
+    print(
+        "\nSaved ADV directional pressure time series:\n"
+        f"{directional_pressure_file}"
+    )
+    print(directional_pressure.groupby("case_id").size())
+
+# ============================================================
+# SAVE BURST-LEVEL ADV PRESSURE / WAVE STATISTICS
+# ============================================================
+
+pressure_statistics_file = (
+    output_folder
+    / "all_cases_ADV_pressure_wave_statistics.csv"
+)
+
+pressure_save_columns = [
+    "analysis_block_number",
+    "source_segment_id",
+    "subblock_number",
+    "start_time",
+    "end_time",
+    "mid_time",
+    "sample_count",
+    "duration_minutes",
+    "valid_fraction",
+    "mean_pressure_pa",
+    "mean_pressure_head_m",
+    "mean_water_depth_m",
+    "pressure_std_pa",
+    "pressure_frozen_fraction",
+    "ig_variance_m2",
+    "ss_variance_m2",
+    "ss_common_fc_variance_m2",
+    "hm0_ig_m",
+    "hm0_ss_m",
+    "hm0_ss_common_fc_m",
+    "ig_to_ss_variance_ratio",
+    "ig_to_ss_common_fc_variance_ratio",
+    "ig_effective_high_hz",
+    "ss_effective_high_hz",
+    "common_fc_reliable",
+    "max_reliable_frequency_hz",
+]
+
+pressure_save = accepted[pressure_save_columns].copy()
+pressure_save.insert(0, "case_name", case_label)
+pressure_save.insert(0, "case_id", case_id)
+
+# Save processing settings for traceability.
+pressure_save["sensor_height_above_bed_m"] = z_pressure_m
+pressure_save["native_pressure_sampling_frequency_hz"] = fs
+pressure_save["stored_sampling_frequency_hz"] = stored_fs_hz
+pressure_save["pressure_repeat_factor"] = pressure_repeat_factor
+pressure_save["ig_low_hz"] = ig_low_hz
+pressure_save["ig_high_hz"] = ig_high_hz
+pressure_save["ss_low_hz"] = ss_low_hz
+pressure_save["ss_high_hz"] = ss_high_hz
+pressure_save["common_ss_high_hz"] = common_ss_high_hz
+pressure_save["detrend_order"] = detrend_order
+pressure_save["welch_segment_seconds"] = welch_segment_seconds
+pressure_save["overlap_fraction"] = overlap_fraction
+pressure_save["max_pressure_amplitude_gain"] = max_pressure_amplitude_gain
+
+if pressure_statistics_file.exists():
+    old = pd.read_csv(
+        pressure_statistics_file,
+        parse_dates=["start_time", "end_time", "mid_time"],
+    )
+    if "case_id" not in old.columns:
+        raise KeyError(
+            "Existing ADV pressure-statistics file "
+            "does not contain case_id."
+        )
+    old = old.loc[old["case_id"] != case_id]
+    pressure_save = pd.concat(
+        [old, pressure_save],
+        ignore_index=True,
+    )
+
+pressure_save = (
+    pressure_save
+    .sort_values(["case_id", "mid_time", "analysis_block_number"])
+    .reset_index(drop=True)
+)
+pressure_save.to_csv(
+    pressure_statistics_file,
+    index=False,
+)
+
+print(
+    "\nSaved shared ADV pressure/wave statistics:\n"
+    f"{pressure_statistics_file}"
+)
+print(pressure_save.groupby("case_id").size())
 
 print("\nAccepted-burst statistics:")
 print(
