@@ -17,3 +17,7 @@ Spectrum per block: wave condition should be stationary per spectrum; saving the
 
 Remaining question:
 Longshore velocity variance is higher than cross-shore. 
+
+Tidal modulation analysis:
+In other studies, m0IG or m0IG/m0SS is modulated by tidal water level (Okihiro and Guza, 1995; Thomson et al., 2006).
+Hm0IG reduces during ebb tide---IG wave blocking due to opposing ebb tidal currents in shallow water depths at the inlet (Dodet et al., 2013; Bertin and Olabarrieta, 2016).
