@@ -118,6 +118,7 @@ with h5py.File(file_path, "r") as f:
     north_ds = f["North"]
     time_ds = f["time"]
     z_bin = f["Z_bin"][...].astype(np.float64)
+    z = f["Z"][...].astype(np.float64)
 
     print("\n" + "=" * 70)
     print("ADCP-HR EAST/NORTH AVAILABILITY CHECK")
@@ -180,6 +181,8 @@ with h5py.File(file_path, "r") as f:
     print("Number of cells:", number_of_cells)
     print("Z_bin values (m):")
     print(z_bin)
+    print("Z (m):")
+    print(z)
 
     # --------------------------------------------------------
     # INSPECT TIMESTAMPS AND SAMPLING FREQUENCY
@@ -273,160 +276,160 @@ with h5py.File(file_path, "r") as f:
         "Hz",
     )
 
-    # --------------------------------------------------------
-    # SMALL-READ TESTS THROUGHOUT THE FILE
-    # --------------------------------------------------------
+    # # --------------------------------------------------------
+    # # SMALL-READ TESTS THROUGHOUT THE FILE
+    # # --------------------------------------------------------
 
-    print("\n" + "=" * 70)
-    print("SMALL-READ TESTS")
+    # print("\n" + "=" * 70)
+    # print("SMALL-READ TESTS")
 
-    small_test_records = []
+    # small_test_records = []
 
-    for cell_index in range(number_of_cells):
+    # for cell_index in range(number_of_cells):
 
-        print(
-            f"\nCell {cell_index + 1}, "
-            f"Z_bin={z_bin[cell_index]:.3f} m"
-        )
+    #     print(
+    #         f"\nCell {cell_index + 1}, "
+    #         f"Z_bin={z_bin[cell_index]:.3f} m"
+    #     )
 
-        for start in test_starts:
+    #     for start in test_starts:
 
-            if start >= number_of_samples:
-                continue
+    #         if start >= number_of_samples:
+    #             continue
 
-            stop = min(
-                start + 1000,
-                number_of_samples,
-            )
+    #         stop = min(
+    #             start + 1000,
+    #             number_of_samples,
+    #         )
 
-            try:
-                east_raw = east_ds[
-                    start:stop,
-                    0,
-                    cell_index,
-                ].astype(np.float64)
+    #         try:
+    #             east_raw = east_ds[
+    #                 start:stop,
+    #                 0,
+    #                 cell_index,
+    #             ].astype(np.float64)
 
-                east_read_success = True
-                east_error = ""
+    #             east_read_success = True
+    #             east_error = ""
 
-            except Exception as exc:
-                east_raw = np.full(
-                    stop - start,
-                    np.nan,
-                )
+    #         except Exception as exc:
+    #             east_raw = np.full(
+    #                 stop - start,
+    #                 np.nan,
+    #             )
 
-                east_read_success = False
-                east_error = (
-                    f"{type(exc).__name__}: {exc}"
-                )
+    #             east_read_success = False
+    #             east_error = (
+    #                 f"{type(exc).__name__}: {exc}"
+    #             )
 
-            try:
-                north_raw = north_ds[
-                    start:stop,
-                    0,
-                    cell_index,
-                ].astype(np.float64)
+    #         try:
+    #             north_raw = north_ds[
+    #                 start:stop,
+    #                 0,
+    #                 cell_index,
+    #             ].astype(np.float64)
 
-                north_read_success = True
-                north_error = ""
+    #             north_read_success = True
+    #             north_error = ""
 
-            except Exception as exc:
-                north_raw = np.full(
-                    stop - start,
-                    np.nan,
-                )
+    #         except Exception as exc:
+    #             north_raw = np.full(
+    #                 stop - start,
+    #                 np.nan,
+    #             )
 
-                north_read_success = False
-                north_error = (
-                    f"{type(exc).__name__}: {exc}"
-                )
+    #             north_read_success = False
+    #             north_error = (
+    #                 f"{type(exc).__name__}: {exc}"
+    #             )
 
-            if east_fill is not None:
-                east_raw[east_raw == east_fill] = np.nan
+    #         if east_fill is not None:
+    #             east_raw[east_raw == east_fill] = np.nan
 
-            if north_fill is not None:
-                north_raw[north_raw == north_fill] = np.nan
+    #         if north_fill is not None:
+    #             north_raw[north_raw == north_fill] = np.nan
 
-            east_values = (
-                east_raw * east_scale
-                + east_offset
-            )
+    #         east_values = (
+    #             east_raw * east_scale
+    #             + east_offset
+    #         )
 
-            north_values = (
-                north_raw * north_scale
-                + north_offset
-            )
+    #         north_values = (
+    #             north_raw * north_scale
+    #             + north_offset
+    #         )
 
-            east_valid = np.isfinite(east_values)
-            north_valid = np.isfinite(north_values)
+    #         east_valid = np.isfinite(east_values)
+    #         north_valid = np.isfinite(north_values)
 
-            paired_valid = (
-                east_valid
-                & north_valid
-            )
+    #         paired_valid = (
+    #             east_valid
+    #             & north_valid
+    #         )
 
-            east_valid_fraction = (
-                east_valid.mean()
-            )
+    #         east_valid_fraction = (
+    #             east_valid.mean()
+    #         )
 
-            north_valid_fraction = (
-                north_valid.mean()
-            )
+    #         north_valid_fraction = (
+    #             north_valid.mean()
+    #         )
 
-            paired_valid_fraction = (
-                paired_valid.mean()
-            )
+    #         paired_valid_fraction = (
+    #             paired_valid.mean()
+    #         )
 
-            print(
-                f"{start:>9}: "
-                f"East read={east_read_success}, "
-                f"North read={north_read_success}, "
-                f"paired valid="
-                f"{paired_valid_fraction:.3f}"
-            )
+    #         print(
+    #             f"{start:>9}: "
+    #             f"East read={east_read_success}, "
+    #             f"North read={north_read_success}, "
+    #             f"paired valid="
+    #             f"{paired_valid_fraction:.3f}"
+    #         )
 
-            if not east_read_success:
-                print(
-                    "  East error:",
-                    east_error,
-                )
+    #         if not east_read_success:
+    #             print(
+    #                 "  East error:",
+    #                 east_error,
+    #             )
 
-            if not north_read_success:
-                print(
-                    "  North error:",
-                    north_error,
-                )
+    #         if not north_read_success:
+    #             print(
+    #                 "  North error:",
+    #                 north_error,
+    #             )
 
-            small_test_records.append(
-                {
-                    "cell_number":
-                        cell_index + 1,
-                    "z_bin_m":
-                        z_bin[cell_index],
-                    "start_index":
-                        start,
-                    "stop_index":
-                        stop,
-                    "east_read_success":
-                        east_read_success,
-                    "north_read_success":
-                        north_read_success,
-                    "east_valid_fraction":
-                        east_valid_fraction,
-                    "north_valid_fraction":
-                        north_valid_fraction,
-                    "paired_valid_fraction":
-                        paired_valid_fraction,
-                    "east_error":
-                        east_error,
-                    "north_error":
-                        north_error,
-                }
-            )
+    #         small_test_records.append(
+    #             {
+    #                 "cell_number":
+    #                     cell_index + 1,
+    #                 "z_bin_m":
+    #                     z_bin[cell_index],
+    #                 "start_index":
+    #                     start,
+    #                 "stop_index":
+    #                     stop,
+    #                 "east_read_success":
+    #                     east_read_success,
+    #                 "north_read_success":
+    #                     north_read_success,
+    #                 "east_valid_fraction":
+    #                     east_valid_fraction,
+    #                 "north_valid_fraction":
+    #                     north_valid_fraction,
+    #                 "paired_valid_fraction":
+    #                     paired_valid_fraction,
+    #                 "east_error":
+    #                     east_error,
+    #                 "north_error":
+    #                     north_error,
+    #             }
+    #         )
 
-    small_test_results = pd.DataFrame(
-        small_test_records
-    )
+    # small_test_results = pd.DataFrame(
+    #     small_test_records
+    # )
 
     # --------------------------------------------------------
     # FULL-RECORD AVAILABILITY BY CELL

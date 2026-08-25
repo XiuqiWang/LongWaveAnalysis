@@ -10,6 +10,7 @@ Inspects the data structure of adv.nc files
 
 import h5py
 import numpy as np
+import pandas as pd
 
 file_path = (
     r"C:\dev\Python\LongWaveAnalysis\ADV"
@@ -62,33 +63,34 @@ with h5py.File(file_path, "r") as f:
                     exc,
                 )
 
-# inspects the second dimension -> two elevations
-names = [
-    "instrument",
-    "lat",
-    "lon",
-    "Z",
-    "Z_vel",
-    "Z_pres",
-]
+# # inspects the second dimension -> two elevations
+# names = [
+#     "instrument",
+#     "lat",
+#     "lon",
+#     "Z",
+#     "Z_vel",
+#     "Z_pres",
+# ]
 
-with h5py.File(file_path, "r") as f:
-    for name in names:
-        print("\n" + "=" * 60)
-        print(name)
+# with h5py.File(file_path, "r") as f:
+#     for name in names:
+#         print("\n" + "=" * 60)
+#         print(name)
 
-        dset = f[name]
-        print("shape:", dset.shape)
-        print("dtype:", dset.dtype)
+#         dset = f[name]
+#         print("shape:", dset.shape)
+#         print("dtype:", dset.dtype)
 
-        try:
-            print("values:", dset[...])
-        except Exception as exc:
-            print("Could not read values:", type(exc).__name__, exc)
+#         try:
+#             print("values:", dset[...])
+#         except Exception as exc:
+#             print("Could not read values:", type(exc).__name__, exc)
 
-        try:
-            print("attributes:")
-            for attr_name in dset.attrs.keys():
-                print(" ", attr_name, "=", dset.attrs[attr_name])
-        except Exception as exc:
-            print("Could not read attributes:", type(exc).__name__, exc)
+#         try:
+#             print("attributes:")
+#             for attr_name in dset.attrs.keys():
+#                 print(" ", attr_name, "=", dset.attrs[attr_name])
+#         except Exception as exc:
+#             print("Could not read attributes:", type(exc).__name__, exc)
+

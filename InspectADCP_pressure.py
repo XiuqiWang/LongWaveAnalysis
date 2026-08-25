@@ -17,7 +17,7 @@ import pandas as pd
 
 file_path = (
     r"C:\dev\Python\LongWaveAnalysis\ADCP"
-    r"\UP\adcp_dvn_201804_f4p2_000.nc"
+    r"\UP\adcp_dvn_201804_f3p3_000.nc"
 )
 
 pressure_variable = "pressure_corrected"
