@@ -1,12 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Aug 11 15:00:34 2026
+Compare ADCP velocity RMS, tidal current, water depth,
+and pressure-derived IG/SS wave energy for F1 and F3.
 
-@author: WangX3
+Velocity/current input
+----------------------
+all_cases_ADCP_current_wave_axis.csv
+
+Wave-height/water-depth input
+-----------------------------
+all_cases_wave_heights_common_fc.csv
+
+For each frame:
+1. Select the highest processed ADCP cell.
+2. Match ADCP burst statistics with pressure/wave statistics by time.
+3. Plot IG velocity RMS vs water depth.
+4. Plot SS velocity RMS vs water depth.
+5. Plot RH = m0_IG/m0_SS vs water depth.
+6. Plot:
+       Ru = |U_RMS,IG|^2 / |U_RMS,SS|^2 vs Ucurrent
+       RH = m0_IG/m0_SS vs Ucurrent
 """
 
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -18,7 +34,7 @@ import pandas as pd
 
 input_file_vel = Path(
     r"C:\dev\Python\LongWaveAnalysis\Spectra"
-    r"\all_cases_velocityRMS.csv"
+    r"\all_cases_ADCP_current_wave_axis.csv"
 )
 
 input_file_H = Path(
@@ -26,57 +42,144 @@ input_file_H = Path(
     r"\all_cases_wave_heights_common_fc.csv"
 )
 
-frame1_case = "DVN_F1_ADV01"
-frame1_label = "DVN F1 ADV (20 m)"
+frames_to_plot = ["F1", "F3"]
+
+frame_labels = {
+    "F1": "Frame 1",
+    "F3": "Frame 3",
+}
+
+merge_tolerance = pd.Timedelta("20min")
+plot_gap_seconds = 3600.0
+
+# PLOT TIME WINDOW
+plot_start = pd.Timestamp("2018-04-05 00:00:00", tz="UTC")
+plot_end = pd.Timestamp("2018-05-15 00:00:00", tz="UTC")  
 
 
-# ------------------------------------------------------------
-# Column names in velocity-RMS CSV
-# Change these only if your file uses different names.
-# ------------------------------------------------------------
+# ============================================================
+# COLUMN NAMES
+# ============================================================
 
-cross_ig_column = "cross_ig_rms"
-along_ig_column = "along_ig_rms"
+cross_ig_column = "cross_ig_rms_m_s"
+along_ig_column = "along_ig_rms_m_s"
+horizontal_ig_column = "horizontal_ig_rms_m_s"
 
-cross_ss_column = "cross_ss_rms"
-along_ss_column = "along_ss_rms"
+cross_ss_column = "cross_ss_rms_m_s"
+along_ss_column = "along_ss_rms_m_s"
+horizontal_ss_column = "horizontal_ss_rms_m_s"
 
-# Water-depth column in wave-height CSV
+current_speed_column = "depth_avg_current_speed_m_s"
+
+cell_column = "cell_number"
+height_column = "height_relative_to_frame_bottom_m"
+
 water_depth_column = "mean_water_depth_m"
+hm0_ig_column = "hm0_ig_m"
+hm0_ss_column = "hm0_ss_m"
+
+
+# ============================================================
+# FUNCTIONS
+# ============================================================
+
+def extract_frame_id(series):
+    return (
+        series.astype(str)
+        .str.extract(r"(F\d+)", expand=False)
+        .str.upper()
+    )
+
+
+def normalize_time(series):
+    return pd.to_datetime(
+        series,
+        utc=True,
+        errors="coerce",
+    ).astype("datetime64[ns, UTC]")
+
+
+def break_plot_gaps(data, columns):
+    output = data.copy()
+
+    large_gap = (
+        output["mid_time"]
+        .diff()
+        .dt.total_seconds()
+        > plot_gap_seconds
+    )
+
+    output.loc[
+        large_gap,
+        columns,
+    ] = np.nan
+
+    return output
 
 
 # ============================================================
 # LOAD DATA
 # ============================================================
 
+print("Reading ADCP velocity/current statistics:")
+print(input_file_vel)
+
 df_vel = pd.read_csv(
-    input_file_vel,
-    parse_dates=[
-        "start_time",
-        "end_time",
-        "mid_time",
-    ],
+    input_file_vel
 )
 
-df_vel = (
-    df_vel
-    .sort_values("mid_time")
-    .reset_index(drop=True)
-)
+print("\nReading wave-height/water-depth statistics:")
+print(input_file_H)
 
 df_H = pd.read_csv(
-    input_file_H,
-    parse_dates=[
+    input_file_H
+)
+
+
+# ============================================================
+# NORMALIZE TIME
+# ============================================================
+
+for df in [df_vel, df_H]:
+    for column in [
         "start_time",
         "end_time",
         "mid_time",
-    ],
+    ]:
+        if column in df.columns:
+            df[column] = normalize_time(
+                df[column]
+            )
+
+
+# ============================================================
+# FRAME IDs
+# ============================================================
+
+df_vel["frame_id"] = extract_frame_id(
+    df_vel["case_id"]
 )
 
-df_H = (
-    df_H
-    .sort_values("mid_time")
-    .reset_index(drop=True)
+df_H["frame_id"] = extract_frame_id(
+    df_H["case_id"]
+)
+
+print("\nADCP cases:")
+print(
+    df_vel[
+        ["case_id", "frame_id"]
+    ]
+    .drop_duplicates()
+    .to_string(index=False)
+)
+
+print("\nWave-height cases:")
+print(
+    df_H[
+        ["case_id", "frame_id"]
+    ]
+    .drop_duplicates()
+    .to_string(index=False)
 )
 
 
@@ -86,11 +189,26 @@ df_H = (
 
 required_vel_columns = {
     "case_id",
+    "frame_id",
     "mid_time",
+    cell_column,
+    height_column,
     cross_ig_column,
     along_ig_column,
+    horizontal_ig_column,
     cross_ss_column,
     along_ss_column,
+    horizontal_ss_column,
+    current_speed_column,
+}
+
+required_H_columns = {
+    "case_id",
+    "frame_id",
+    "mid_time",
+    water_depth_column,
+    hm0_ig_column,
+    hm0_ss_column,
 }
 
 missing_vel = (
@@ -98,985 +216,370 @@ missing_vel = (
     - set(df_vel.columns)
 )
 
-if missing_vel:
-    raise KeyError(
-        "Missing required velocity columns: "
-        f"{sorted(missing_vel)}"
-    )
-
-
-required_H_columns = {
-    "case_id",
-    "mid_time",
-    water_depth_column,
-}
-
 missing_H = (
     required_H_columns
     - set(df_H.columns)
 )
 
+if missing_vel:
+    raise KeyError(
+        "Missing ADCP velocity columns: "
+        f"{sorted(missing_vel)}"
+    )
+
 if missing_H:
     raise KeyError(
-        "Missing required water-depth columns: "
+        "Missing wave-height columns: "
         f"{sorted(missing_H)}"
     )
 
 
 # ============================================================
-# EXTRACT FRAME 1
+# BUILD MATCHED DATA FOR F1 AND F3
 # ============================================================
 
-frame1_vel = (
-    df_vel.loc[
-        df_vel["case_id"] == frame1_case,
-        [
-            "mid_time",
-            cross_ig_column,
-            along_ig_column,
-            cross_ss_column,
-            along_ss_column,
-        ],
-    ]
-    .copy()
-    .sort_values("mid_time")
-    .reset_index(drop=True)
-)
+matched = {}
 
-frame1_H = (
-    df_H.loc[
-        df_H["case_id"] == frame1_case,
-        [
-            "mid_time",
-            water_depth_column,
-        ],
-    ]
-    .copy()
-    .sort_values("mid_time")
-    .reset_index(drop=True)
-)
+for frame_id in frames_to_plot:
 
+    # --------------------------------------------------------
+    # ADCP data for this frame
+    # --------------------------------------------------------
 
-if frame1_vel.empty:
-    raise RuntimeError(
-        f"No velocity-RMS data found for {frame1_case}."
+    vel = (
+        df_vel.loc[
+            df_vel["frame_id"] == frame_id
+        ]
+        .copy()
     )
 
-if frame1_H.empty:
-    raise RuntimeError(
-        f"No water-depth data found for {frame1_case}."
-    )
-
-
-# ============================================================
-# ALIGN WATER DEPTH WITH VELOCITY RMS
-# ============================================================
-
-# Use nearest-time matching because the two products may have
-# slightly different burst-center timestamps.
-#
-# The tolerance can be adjusted if necessary.
-merge_tolerance = pd.Timedelta("20min")
-
-frame1 = pd.merge_asof(
-    frame1_vel,
-    frame1_H,
-    on="mid_time",
-    direction="nearest",
-    tolerance=merge_tolerance,
-)
-
-print("\nFrame 1 merged data:")
-print(frame1.head())
-
-print(
-    "\nVelocity rows:",
-    len(frame1_vel),
-)
-
-print(
-    "Water-depth rows:",
-    len(frame1_H),
-)
-
-print(
-    "Merged rows:",
-    len(frame1),
-)
-
-print(
-    "Rows without matched water depth:",
-    frame1[water_depth_column].isna().sum(),
-)
-
-
-# ============================================================
-# OPTIONAL: BREAK LINES ACROSS LARGE DATA GAPS
-# ============================================================
-
-time_gap_seconds = (
-    frame1["mid_time"]
-    .diff()
-    .dt.total_seconds()
-)
-
-large_gap = (
-    time_gap_seconds > 3600
-)
-
-plot_columns = [
-    cross_ig_column,
-    along_ig_column,
-    cross_ss_column,
-    along_ss_column,
-    water_depth_column,
-]
-
-frame1_plot = frame1.copy()
-
-frame1_plot.loc[
-    large_gap,
-    plot_columns,
-] = np.nan
-
-
-# ============================================================
-# PLOT IG RMS + WATER DEPTH
-# ============================================================
-
-fig, axes = plt.subplots(
-    2,
-    1,
-    figsize=(12, 8),
-    sharex=True,
-)
-
-# ------------------------------------------------------------
-# Cross-shore IG RMS
-# ------------------------------------------------------------
-
-ax = axes[0]
-
-line_u = ax.plot(
-    frame1_plot["mid_time"],
-    frame1_plot[cross_ig_column],
-    label="Cross-shore IG RMS",
-)
-
-ax.set_ylabel(
-    r"$U_{\mathrm{RMS,IG}}$ (m/s)"
-)
-
-ax.set_ylim(
-    bottom=0
-)
-
-ax.grid(
-    True,
-    alpha=0.3,
-)
-
-ax_depth = ax.twinx()
-
-line_h = ax_depth.plot(
-    frame1_plot["mid_time"],
-    frame1_plot[water_depth_column],
-    linestyle="--",
-    label="Water depth",
-)
-
-ax_depth.set_ylabel(
-    "Water depth (m)"
-)
-
-handles = (
-    line_u
-    + line_h
-)
-
-labels = [
-    line.get_label()
-    for line in handles
-]
-
-ax.legend(
-    handles,
-    labels,
-    loc="upper right",
-)
-
-ax.set_title(
-    "Cross-shore IG velocity RMS and water depth"
-)
-
-
-# ------------------------------------------------------------
-# Alongshore IG RMS
-# ------------------------------------------------------------
-
-ax = axes[1]
-
-line_v = ax.plot(
-    frame1_plot["mid_time"],
-    frame1_plot[along_ig_column],
-    label="Alongshore IG RMS",
-)
-
-ax.set_ylabel(
-    r"$V_{\mathrm{RMS,IG}}$ (m/s)"
-)
-
-ax.set_xlabel(
-    "Time"
-)
-
-ax.set_ylim(
-    bottom=0
-)
-
-ax.grid(
-    True,
-    alpha=0.3,
-)
-
-ax_depth = ax.twinx()
-
-line_h = ax_depth.plot(
-    frame1_plot["mid_time"],
-    frame1_plot[water_depth_column],
-    linestyle="--",
-    label="Water depth",
-)
-
-ax_depth.set_ylabel(
-    "Water depth (m)"
-)
-
-handles = (
-    line_v
-    + line_h
-)
-
-labels = [
-    line.get_label()
-    for line in handles
-]
-
-ax.legend(
-    handles,
-    labels,
-    loc="upper right",
-)
-
-ax.set_title(
-    "Alongshore IG velocity RMS and water depth"
-)
-
-
-fig.suptitle(
-    f"Infragravity velocity RMS and water depth ({frame1_label})"
-)
-
-fig.tight_layout(
-    rect=[0, 0, 1, 0.96]
-)
-
-plt.show()
-
-
-# ============================================================
-# PLOT SEA-SWELL RMS + WATER DEPTH
-# ============================================================
-
-fig, axes = plt.subplots(
-    2,
-    1,
-    figsize=(12, 8),
-    sharex=True,
-)
-
-# ------------------------------------------------------------
-# Cross-shore SS RMS
-# ------------------------------------------------------------
-
-ax = axes[0]
-
-line_u = ax.plot(
-    frame1_plot["mid_time"],
-    frame1_plot[cross_ss_column],
-    label="Cross-shore Sea-Swell RMS",
-)
-
-ax.set_ylabel(
-    r"$U_{\mathrm{RMS,SS}}$ (m/s)"
-)
-
-ax.set_ylim(
-    bottom=0
-)
-
-ax.grid(
-    True,
-    alpha=0.3,
-)
-
-ax_depth = ax.twinx()
-
-line_h = ax_depth.plot(
-    frame1_plot["mid_time"],
-    frame1_plot[water_depth_column],
-    linestyle="--",
-    label="Water depth",
-)
-
-ax_depth.set_ylabel(
-    "Water depth (m)"
-)
-
-handles = (
-    line_u
-    + line_h
-)
-
-labels = [
-    line.get_label()
-    for line in handles
-]
-
-ax.legend(
-    handles,
-    labels,
-    loc="upper right",
-)
-
-ax.set_title(
-    "Cross-shore Sea-Swell velocity RMS and water depth"
-)
-
-
-# ------------------------------------------------------------
-# Alongshore SS RMS
-# ------------------------------------------------------------
-
-ax = axes[1]
-
-line_v = ax.plot(
-    frame1_plot["mid_time"],
-    frame1_plot[along_ss_column],
-    label="Alongshore Sea-Swell RMS",
-)
-
-ax.set_ylabel(
-    r"$V_{\mathrm{RMS,SS}}$ (m/s)"
-)
-
-ax.set_xlabel(
-    "Time"
-)
-
-ax.set_ylim(
-    bottom=0
-)
-
-ax.grid(
-    True,
-    alpha=0.3,
-)
-
-ax_depth = ax.twinx()
-
-line_h = ax_depth.plot(
-    frame1_plot["mid_time"],
-    frame1_plot[water_depth_column],
-    linestyle="--",
-    label="Water depth",
-)
-
-ax_depth.set_ylabel(
-    "Water depth (m)"
-)
-
-handles = (
-    line_v
-    + line_h
-)
-
-labels = [
-    line.get_label()
-    for line in handles
-]
-
-ax.legend(
-    handles,
-    labels,
-    loc="upper right",
-)
-
-ax.set_title(
-    "Alongshore Sea-Swell velocity RMS and water depth"
-)
-
-
-fig.suptitle(
-    f"Sea-swell velocity RMS and water depth ({frame1_label})"
-)
-
-fig.tight_layout(
-    rect=[0, 0, 1, 0.96]
-)
-
-plt.show()
-
-# ============================================================
-# SCATTER PLOT RMS - h
-# ============================================================
-# Convert time to elapsed days for coloring
-time_color = (
-    frame1["mid_time"]
-    - frame1["mid_time"].min()
-).dt.total_seconds() / 86400
-
-
-fig, axes = plt.subplots(
-    2,
-    2,
-    figsize=(11, 9),
-    sharex=True,
-)
-
-plot_info = [
-    (
-        axes[0, 0],
-        cross_ig_column,
-        r"$U_{\mathrm{RMS,IG}}$ (m/s)",
-        "Cross-shore IG",
-    ),
-    (
-        axes[0, 1],
-        along_ig_column,
-        r"$V_{\mathrm{RMS,IG}}$ (m/s)",
-        "Alongshore IG",
-    ),
-    (
-        axes[1, 0],
-        cross_ss_column,
-        r"$U_{\mathrm{RMS,SS}}$ (m/s)",
-        "Cross-shore Sea-Swell",
-    ),
-    (
-        axes[1, 1],
-        along_ss_column,
-        r"$V_{\mathrm{RMS,SS}}$ (m/s)",
-        "Alongshore Sea-Swell",
-    ),
-]
-
-
-for ax, column, ylabel, title in plot_info:
-
-    valid = (
-        frame1[water_depth_column].notna()
-        & frame1[column].notna()
-    )
-
-    scatter = ax.scatter(
-        frame1.loc[valid, water_depth_column],
-        frame1.loc[valid, column],
-        c=time_color.loc[valid],
-        alpha=0.65,
-        s=20,
-    )
-
-    ax.set_xlabel("Mean water depth (m)")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.set_ylim(bottom=0)
-    ax.grid(True, alpha=0.3)
-
-
-cbar = fig.colorbar(
-    scatter,
-    ax=axes.ravel().tolist(),
-    pad=0.02,
-)
-
-cbar.set_label(
-    "Days since start of deployment"
-)
-
-fig.suptitle(
-    f"Velocity RMS versus water depth ({frame1_label})"
-)
-
-plt.show()
-
-# ============================================================
-# CLASSIFY FLOOD / EBB TIDE
-# ============================================================
-
-tidal = frame1.copy()
-
-# ------------------------------------------------------------
-# Identify continuous parts of the record
-# ------------------------------------------------------------
-
-gap_threshold_seconds = 3600.0
-
-dt_seconds = (
-    tidal["mid_time"]
-    .diff()
-    .dt.total_seconds()
-)
-
-new_segment = (
-    dt_seconds.isna()
-    | (dt_seconds > gap_threshold_seconds)
-    | (dt_seconds <= 0)
-)
-
-tidal["continuous_segment"] = (
-    new_segment.cumsum()
-)
-
-for segment_id, segment in tidal.groupby(
-    "continuous_segment"
-):
-    if len(segment) >= 2:
-        tidal.loc[
-            [segment.index[0], segment.index[-1]],
-            "dh_dt_m_per_hr",
-        ] = np.nan
-
-
-# ------------------------------------------------------------
-# Smooth h separately inside each continuous segment
-# ------------------------------------------------------------
-
-tidal["h_smooth"] = np.nan
-
-for segment_id, segment in tidal.groupby(
-    "continuous_segment",
-    sort=True,
-):
-
-    smoothed = (
-        segment[water_depth_column]
-        .rolling(
-            window=3,
-            center=True,
-            min_periods=2,
+    if vel.empty:
+        print(
+            f"\nNo ADCP velocity data for {frame_id}."
         )
-        .mean()
-    )
-
-    tidal.loc[
-        segment.index,
-        "h_smooth",
-    ] = smoothed
-
-
-# ------------------------------------------------------------
-# Calculate dh/dt separately inside each continuous segment
-# ------------------------------------------------------------
-
-tidal["dh_dt_m_per_hr"] = np.nan
-
-for segment_id, segment in tidal.groupby(
-    "continuous_segment",
-    sort=True,
-):
-
-    valid = (
-        segment["mid_time"].notna()
-        & segment["h_smooth"].notna()
-    )
-
-    sub = segment.loc[valid].copy()
-
-    if len(sub) < 3:
         continue
 
-    time_hours = (
-        (
-            sub["mid_time"]
-            - sub["mid_time"].iloc[0]
-        )
-        .dt.total_seconds()
-        .to_numpy(dtype=float)
-        / 3600.0
-    )
 
-    h = (
-        sub["h_smooth"]
-        .to_numpy(dtype=float)
-    )
+    # --------------------------------------------------------
+    # Select highest processed ADCP cell
+    # --------------------------------------------------------
 
-    dh_dt = np.gradient(
-        h,
-        time_hours,
-    )
-
-    tidal.loc[
-        sub.index,
-        "dh_dt_m_per_hr",
-    ] = dh_dt
-
-
-# ------------------------------------------------------------
-# Assign tidal stage
-# ------------------------------------------------------------
-
-slack_threshold_m_per_hr = 0.01
-
-tidal["tide_stage"] = pd.Series(
-    pd.NA,
-    index=tidal.index,
-    dtype="object",
-)
-
-flood_mask = (
-    tidal["dh_dt_m_per_hr"]
-    > slack_threshold_m_per_hr
-)
-
-ebb_mask = (
-    tidal["dh_dt_m_per_hr"]
-    < -slack_threshold_m_per_hr
-)
-
-slack_mask = (
-    tidal["dh_dt_m_per_hr"].notna()
-    & ~flood_mask
-    & ~ebb_mask
-)
-
-tidal.loc[
-    flood_mask,
-    "tide_stage",
-] = "flood"
-
-tidal.loc[
-    ebb_mask,
-    "tide_stage",
-] = "ebb"
-
-tidal.loc[
-    slack_mask,
-    "tide_stage",
-] = "slack"
-
-
-print("\nContinuous segments:")
-print(
-    tidal.groupby(
-        "continuous_segment"
-    ).agg(
-        start_time=("mid_time", "first"),
-        end_time=("mid_time", "last"),
-        n=("mid_time", "size"),
-    )
-)
-
-print("\nTidal-stage counts:")
-print(
-    tidal["tide_stage"]
-    .value_counts(dropna=False)
-)
-
-# ============================================================
-# VERIFY FLOOD / EBB CLASSIFICATION
-# ============================================================
-
-fig, axes = plt.subplots(
-    2,
-    1,
-    figsize=(12, 7),
-    sharex=True,
-)
-
-# ------------------------------------------------------------
-# Water depth
-# ------------------------------------------------------------
-
-for segment_id, segment in tidal.groupby(
-    "continuous_segment",
-    sort=True,
-):
-
-    axes[0].plot(
-        segment["mid_time"],
-        segment[water_depth_column],
-        alpha=0.35,
-        color="C0",
-        label=(
-            "Original h"
-            if segment_id == tidal["continuous_segment"].min()
-            else None
-        ),
-    )
-
-    axes[0].plot(
-        segment["mid_time"],
-        segment["h_smooth"],
-        color="C1",
-        label=(
-            "Smoothed h"
-            if segment_id == tidal["continuous_segment"].min()
-            else None
-        ),
-    )
-
-axes[0].set_ylabel(
-    "Water depth (m)"
-)
-
-
-
-axes[0].grid(
-    True,
-    alpha=0.3,
-)
-
-axes[0].legend()
-
-
-# ------------------------------------------------------------
-# dh/dt
-# ------------------------------------------------------------
-
-for segment_id, segment in tidal.groupby(
-    "continuous_segment",
-    sort=True,
-):
-
-    axes[1].plot(
-        segment["mid_time"],
-        segment["dh_dt_m_per_hr"],
-        color="C0",
-    )
-
-axes[1].axhline(
-    0,
-    linewidth=0.8,
-)
-
-axes[1].axhline(
-    slack_threshold_m_per_hr,
-    linestyle="--",
-    label="Slack threshold",
-)
-
-axes[1].axhline(
-    -slack_threshold_m_per_hr,
-    linestyle="--",
-)
-
-axes[1].set_xlabel(
-    "Time"
-)
-
-axes[1].set_ylabel(
-    r"$dh/dt$ (m h$^{-1}$)"
-)
-
-axes[1].grid(
-    True,
-    alpha=0.3,
-)
-
-axes[1].legend()
-
-
-fig.suptitle(
-    f"Tidal-stage classification ({frame1_label})"
-)
-
-fig.tight_layout(
-    rect=[0, 0, 1, 0.96]
-)
-
-plt.show()
-
-# ============================================================
-# CORRELATION BY TIDAL STAGE
-# ============================================================
-
-variables = {
-    "Cross-shore IG":
-        cross_ig_column,
-    "Alongshore IG":
-        along_ig_column,
-    "Cross-shore SS":
-        cross_ss_column,
-    "Alongshore SS":
-        along_ss_column,
-}
-
-print("\nRMS-depth relationships by tidal stage:")
-
-for label, column in variables.items():
-
-    print("\n" + label)
-
-    for stage in [
-        "flood",
-        "ebb",
-    ]:
-
-        data = tidal.loc[
-            tidal["tide_stage"] == stage,
+    cell_heights = (
+        vel[
             [
-                water_depth_column,
-                column,
+                cell_column,
+                height_column,
+            ]
+        ]
+        .dropna()
+        .drop_duplicates()
+    )
+
+    highest = cell_heights.loc[
+        cell_heights[
+            height_column
+        ].idxmax()
+    ]
+
+    selected_cell = int(
+        highest[
+            cell_column
+        ]
+    )
+
+    selected_height = float(
+        highest[
+            height_column
+        ]
+    )
+
+    print(
+        f"\n{frame_id}: using ADCP cell "
+        f"{selected_cell}, "
+        f"z={selected_height:.3f} m"
+    )
+
+    vel = (
+        vel.loc[
+            vel[
+                cell_column
+            ]
+            == selected_cell,
+            [
+                "mid_time",
+                cross_ig_column,
+                along_ig_column,
+                horizontal_ig_column,
+                cross_ss_column,
+                along_ss_column,
+                horizontal_ss_column,
+                current_speed_column,
             ],
-        ].dropna()
-
-        if len(data) < 3:
-            print(
-                stage,
-                ": insufficient data",
-            )
-            continue
-
-        r = data[
-            water_depth_column
-        ].corr(
-            data[column]
+        ]
+        .dropna(
+            subset=["mid_time"]
         )
-
-        # Simple linear slope:
-        # RMS = slope * h + intercept
-        slope, intercept = np.polyfit(
-            data[water_depth_column],
-            data[column],
-            deg=1,
+        .sort_values("mid_time")
+        .drop_duplicates(
+            subset="mid_time"
         )
+        .reset_index(drop=True)
+    )
 
+
+    # --------------------------------------------------------
+    # Pressure/wave data for same frame
+    # --------------------------------------------------------
+
+    wave = (
+        df_H.loc[
+            df_H["frame_id"] == frame_id,
+            [
+                "mid_time",
+                water_depth_column,
+                hm0_ig_column,
+                hm0_ss_column,
+            ],
+        ]
+        .dropna(
+            subset=["mid_time"]
+        )
+        .sort_values("mid_time")
+        .drop_duplicates(
+            subset="mid_time"
+        )
+        .reset_index(drop=True)
+    )
+
+    if wave.empty:
         print(
-            f"{stage:5s}: "
-            f"n={len(data):4d}, "
-            f"r={r: .3f}, "
-            f"slope={slope: .5f} "
-            "(m/s)/m"
+            f"No wave/water-depth data for {frame_id}."
         )
-        
-# ============================================================
-# RMS VERSUS DEPTH:
-# FLOOD / EBB WITH LINEAR REGRESSION
-# ============================================================
+        continue
 
-fig, axes = plt.subplots(
-    2,
-    2,
-    figsize=(11, 9),
-    sharex=True,
-)
 
-plot_info = [
-    (
-        axes[0, 0],
-        cross_ig_column,
-        r"$U_{\mathrm{RMS,IG}}$ (m/s)",
-        "Cross-shore IG",
-    ),
-    (
-        axes[0, 1],
-        along_ig_column,
-        r"$V_{\mathrm{RMS,IG}}$ (m/s)",
-        "Alongshore IG",
-    ),
-    (
-        axes[1, 0],
-        cross_ss_column,
-        r"$U_{\mathrm{RMS,SS}}$ (m/s)",
-        "Cross-shore Sea-Swell",
-    ),
-    (
-        axes[1, 1],
-        along_ss_column,
-        r"$V_{\mathrm{RMS,SS}}$ (m/s)",
-        "Alongshore Sea-Swell",
-    ),
-]
+    # --------------------------------------------------------
+    # Match nearest burst times
+    # --------------------------------------------------------
 
-for ax, column, ylabel, title in plot_info:
-
-    for stage in ["flood", "ebb"]:
-
-        data = tidal.loc[
-            tidal["tide_stage"] == stage,
-            [
-                water_depth_column,
-                column,
-            ],
-        ].dropna()
-
-        # Scatter
-        ax.scatter(
-            data[water_depth_column],
-            data[column],
-            alpha=0.25,
-            s=15,
-            label=stage.capitalize(),
-        )
-
-        # Linear regression
-        slope, intercept = np.polyfit(
-            data[water_depth_column],
-            data[column],
-            deg=1,
-        )
-
-        r = data[
-            water_depth_column
-        ].corr(
-            data[column]
-        )
-
-        h_fit = np.linspace(
-            data[water_depth_column].min(),
-            data[water_depth_column].max(),
-            100,
-        )
-
-        rms_fit = (
-            slope * h_fit
-            + intercept
-        )
-
-        ax.plot(
-            h_fit,
-            rms_fit,
-            linewidth=2,
-            label=(
-                f"{stage.capitalize()} fit "
-                f"(r={r:.2f})"
-            ),
-        )
-
-    ax.set_xlabel(
-        "Mean water depth (m)"
+    data = pd.merge_asof(
+        vel,
+        wave,
+        on="mid_time",
+        direction="nearest",
+        tolerance=merge_tolerance,
     )
 
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.set_ylim(bottom=0)
 
-    ax.grid(
-        True,
-        alpha=0.3,
+    # ========================================================
+    # RATIOS
+    # ========================================================
+
+    # Velocity variance ratio
+    #
+    # Ru = |U_RMS,IG|^2 / |U_RMS,SS|^2
+
+    data["Ru"] = (
+        data[
+            horizontal_ig_column
+        ] ** 2
+        / data[
+            horizontal_ss_column
+        ] ** 2
     )
 
-    ax.legend()
 
+    # Surface-elevation variance ratio
+    #
+    # Hm0 = 4 sqrt(m0)
+    #
+    # therefore:
+    #
+    # m0_IG / m0_SS
+    # = Hm0_IG^2 / Hm0_SS^2
+
+    data["RH"] = (
+        data[
+            hm0_ig_column
+        ] ** 2
+        / data[
+            hm0_ss_column
+        ] ** 2
+    )
+
+
+    # Remove infinities caused by zero denominator
+    data[
+        ["Ru", "RH"]
+    ] = (
+        data[
+            ["Ru", "RH"]
+        ]
+        .replace(
+            [np.inf, -np.inf],
+            np.nan,
+        )
+    )
+
+
+    matched[
+        frame_id
+    ] = data
+
+
+    print(
+        f"{frame_id}: "
+        f"{len(vel)} velocity bursts, "
+        f"{len(wave)} wave bursts, "
+        f"{data[water_depth_column].notna().sum()} matched"
+    )
+
+
+# ============================================================
+# DERIVED VARIABLES
+# ============================================================
+
+for frame_id, d in matched.items():
+    d["Ru"] = d[horizontal_ig_column]**2 / d[horizontal_ss_column]**2
+    d["m0_IG"] = d[hm0_ig_column]**2 / 16 *10000
+    d["m0_SS"] = d[hm0_ss_column]**2 / 16 *10000
+    d["RH"] = d["m0_IG"] / d["m0_SS"]
+    d[["Ru", "RH"]] = d[["Ru", "RH"]].replace([np.inf, -np.inf], np.nan)
+
+# ============================================================
+# FIGURES 1-2
+# |URMS,IG|, |URMS,SS|, Ru, Ucurrent, h VS TIME
+# ============================================================
+
+for frame_id in ["F1", "F3"]:
+    if frame_id not in matched:
+        continue
+
+    d = matched[frame_id].loc[
+    (matched[frame_id]["mid_time"] >= plot_start) &
+    (matched[frame_id]["mid_time"] < plot_end)
+].sort_values("mid_time").copy()
+    cols = [
+        horizontal_ig_column,
+        horizontal_ss_column,
+        "Ru",
+        current_speed_column,
+        water_depth_column,
+    ]
+    d = break_plot_gaps(d, cols)
+
+    fig, axes = plt.subplots(5, 1, figsize=(13, 11), sharex=True)
+
+    variables = [
+        (horizontal_ig_column, r"$|\mathbf{U}_{\mathrm{RMS,IG}}|$ (m/s)"),
+        (horizontal_ss_column, r"$|\mathbf{U}_{\mathrm{RMS,SS}}|$ (m/s)"),
+        ("Ru", r"$R_u=|\mathbf{U}_{\mathrm{RMS,IG}}|^2/|\mathbf{U}_{\mathrm{RMS,SS}}|^2$"),
+        (current_speed_column, r"$U_{\mathrm{current}}$ (m/s)"),
+        (water_depth_column, r"$h$ (m)"),
+    ]
+
+    for ax, (column, ylabel) in zip(axes, variables):
+        ax.plot(d["mid_time"], d[column])
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.3)
+
+    for ax in axes[:4]:
+        ax.set_ylim(bottom=0)
+
+    axes[-1].set_xlabel("Time")
+    fig.suptitle(f"Velocity IG/SS modulation ({frame_labels[frame_id]})")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.show()
+
+
+# ============================================================
+# FIGURES 3-4
+# m0IG, m0SS, RH, Ucurrent, h VS TIME
+# ============================================================
+
+for frame_id in ["F1", "F3"]:
+    if frame_id not in matched:
+        continue
+
+    d = matched[frame_id].loc[
+    (matched[frame_id]["mid_time"] >= plot_start) &
+    (matched[frame_id]["mid_time"] < plot_end)
+].sort_values("mid_time").copy()
+    cols = [
+        "m0_IG",
+        "m0_SS",
+        "RH",
+        current_speed_column,
+        water_depth_column,
+    ]
+    d = break_plot_gaps(d, cols)
+
+    fig, axes = plt.subplots(5, 1, figsize=(13, 11), sharex=True)
+
+    variables = [
+        ("m0_IG", r"$m_{0,\mathrm{IG}}$ (cm$^2$)"),
+        ("m0_SS", r"$m_{0,\mathrm{SS}}$ (cm$^2$)"),
+        ("RH", r"$R_H=m_{0,\mathrm{IG}}/m_{0,\mathrm{SS}}$"),
+        (current_speed_column, r"$U_{\mathrm{current}}$ (m/s)"),
+        (water_depth_column, r"$h$ (m)"),
+    ]
+
+    for i, (ax, (column, ylabel)) in enumerate(zip(axes, variables)):
+        ax.plot(d["mid_time"], d[column])
+        ax.set_ylabel(ylabel)
+        ax.grid(True, which="both", alpha=0.3)
+
+        # Log-y scale for m0 panels only
+        if i < 2:
+            ax.set_yscale("log")
+        elif i < 4:
+            ax.set_ylim(bottom=0)
+
+    axes[-1].set_xlabel("Time")
+
+    fig.suptitle(
+        f"Surface-wave IG/SS modulation ({frame_labels[frame_id]})"
+    )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.show()
+    
+# ============================================================
+# FIGURE 5
+# Ru-Ucurrent AND RH-Ucurrent, F1/F3
+# ============================================================
+
+fig, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True)
+
+for j, frame_id in enumerate(["F1", "F3"]):
+    if frame_id not in matched:
+        continue
+
+    d = matched[frame_id]
+
+    x = d[[current_speed_column, "Ru"]].dropna()
+    axes[0, j].scatter(
+        x[current_speed_column], x["Ru"],
+        s=18, alpha=0.5
+    )
+    axes[0, j].set_ylabel(r"$R_u$")
+    axes[0, j].set_title(frame_labels[frame_id])
+    axes[0, j].set_ylim(bottom=0)
+    axes[0, j].grid(True, alpha=0.3)
+
+    x = d[[current_speed_column, "RH"]].dropna()
+    axes[1, j].scatter(
+        x[current_speed_column], x["RH"],
+        s=18, alpha=0.5
+    )
+    axes[1, j].set_xlabel(r"$U_{\mathrm{current}}$ (m/s)")
+    axes[1, j].set_ylabel(r"$R_H$")
+    axes[1, j].set_ylim(bottom=0)
+    axes[1, j].grid(True, alpha=0.3)
 
 fig.suptitle(
-    f"Flood–ebb dependence of velocity RMS "
-    f"({frame1_label})"
+    "IG/SS ratios versus depth-averaged current speed\n"
+    f"{plot_start} to {plot_end}"
 )
-
-fig.tight_layout(
-    rect=[0, 0, 1, 0.96]
-)
-
+fig.tight_layout(rect=[0, 0, 1, 0.96])
 plt.show()
