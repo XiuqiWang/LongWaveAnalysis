@@ -26,10 +26,10 @@ import pandas as pd
 
 file_path = Path(
     r"C:\dev\Python\LongWaveAnalysis\ADCP-HR"
-    r"\adcp_hr_dvn_201804_F1P1.nc"
+    r"\adcp_hr_dvn_201804_F3P2.nc"
 )
 
-case_id = "DVN_F1_ADCP_HR"
+case_id = "DVN_F3_ADCP_HR"
 
 output_folder = Path(
     r"C:\dev\Python\LongWaveAnalysis\Processed"
