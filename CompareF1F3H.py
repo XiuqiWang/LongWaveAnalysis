@@ -97,18 +97,18 @@ plt.plot(
     label=frame1_label,
 )
 
-plt.plot(
-    frame3["mid_time"],
-    frame3["hm0_ig_m"],
-    label=frame3_label,
-)
+# plt.plot(
+#     frame3["mid_time"],
+#     frame3["hm0_ig_m"],
+#     label=frame3_label,
+# )
 
 plt.xlabel("Time")
 plt.ylabel(r"$H_{m0,IG}$ (m)")
 plt.ylim(bottom=0)
 plt.title("Infragravity wave height versus time")
 plt.grid(True, alpha=0.3)
-plt.legend()
+# plt.legend()
 plt.tight_layout()
 
 
