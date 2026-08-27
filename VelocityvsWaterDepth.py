@@ -69,6 +69,10 @@ cross_ss_column = "cross_ss_rms_m_s"
 along_ss_column = "along_ss_rms_m_s"
 horizontal_ss_column = "horizontal_ss_rms_m_s"
 
+# Near-bed layer-mean background current
+# (column names in the existing CSV still use "depth_avg")
+current_cross_column = "depth_avg_cross_current_m_s"
+current_along_column = "depth_avg_along_current_m_s"
 current_speed_column = "depth_avg_current_speed_m_s"
 
 cell_column = "cell_number"
@@ -199,6 +203,8 @@ required_vel_columns = {
     cross_ss_column,
     along_ss_column,
     horizontal_ss_column,
+    current_cross_column,
+    current_along_column,
     current_speed_column,
 }
 
@@ -300,30 +306,27 @@ for frame_id in frames_to_plot:
     )
 
     vel = (
-        vel.loc[
-            vel[
-                cell_column
-            ]
-            == selected_cell,
-            [
-                "mid_time",
-                cross_ig_column,
-                along_ig_column,
-                horizontal_ig_column,
-                cross_ss_column,
-                along_ss_column,
-                horizontal_ss_column,
-                current_speed_column,
-            ],
-        ]
-        .dropna(
-            subset=["mid_time"]
-        )
-        .sort_values("mid_time")
-        .drop_duplicates(
-            subset="mid_time"
-        )
-        .reset_index(drop=True)
+    vel.loc[
+        vel[cell_column] == selected_cell,
+        [
+            "mid_time",
+            cross_ig_column,
+            along_ig_column,
+            horizontal_ig_column,
+            cross_ss_column,
+            along_ss_column,
+            horizontal_ss_column,
+
+            # Near-bed layer-mean background current
+            current_cross_column,
+            current_along_column,
+            current_speed_column,
+        ],
+    ]
+    .dropna(subset=["mid_time"])
+    .sort_values("mid_time")
+    .drop_duplicates(subset="mid_time")
+    .reset_index(drop=True)
     )
 
 
@@ -435,6 +438,137 @@ for frame_id in frames_to_plot:
     )
 
 
+
+# ============================================================
+# NEAR-BED LAYER-MEAN BACKGROUND CURRENT VS TIME
+# ============================================================
+
+for frame_id in ["F1", "F3"]:
+
+    if frame_id not in matched:
+        continue
+
+    d = (
+        matched[frame_id]
+        .loc[
+            (matched[frame_id]["mid_time"] >= plot_start)
+            & (matched[frame_id]["mid_time"] < plot_end)
+        ]
+        .sort_values("mid_time")
+        .copy()
+    )
+
+    # Break lines across temporal data gaps
+    current_columns = [
+        current_cross_column,
+        current_along_column,
+        current_speed_column,
+    ]
+
+    d = break_plot_gaps(
+        d,
+        current_columns,
+    )
+
+    fig, axes = plt.subplots(
+        3,
+        1,
+        figsize=(13, 7),
+        sharex=True,
+    )
+
+    # --------------------------------------------------------
+    # Cross-shore component
+    # --------------------------------------------------------
+
+    axes[0].plot(
+        d["mid_time"],
+        d[current_cross_column],
+    )
+
+    axes[0].axhline(
+        0,
+        color="k",
+        linewidth=0.8,
+        alpha=0.5,
+    )
+
+    axes[0].set_ylabel(
+        r"$U_{\mathrm{current}}$ (m/s)"
+    )
+
+    axes[0].grid(
+        True,
+        alpha=0.3,
+    )
+
+    # --------------------------------------------------------
+    # Alongshore component
+    # --------------------------------------------------------
+
+    axes[1].plot(
+        d["mid_time"],
+        d[current_along_column],
+    )
+
+    axes[1].axhline(
+        0,
+        color="k",
+        linewidth=0.8,
+        alpha=0.5,
+    )
+
+    axes[1].set_ylabel(
+        r"$V_{\mathrm{current}}$ (m/s)"
+    )
+
+    axes[1].grid(
+        True,
+        alpha=0.3,
+    )
+
+    # --------------------------------------------------------
+    # Current-vector magnitude
+    # --------------------------------------------------------
+
+    axes[2].plot(
+        d["mid_time"],
+        d[current_speed_column],
+    )
+
+    axes[2].set_ylabel(
+        r"$\mathbf{U}_{\mathrm{current}}$ (m/s)"
+    )
+
+    axes[2].set_ylim(
+        bottom=0
+    )
+
+    axes[2].grid(
+        True,
+        alpha=0.3,
+    )
+
+    axes[2].set_xlabel(
+        "Time"
+    )
+
+    # --------------------------------------------------------
+    # Title
+    # --------------------------------------------------------
+
+    fig.suptitle(
+        "Near-bed layer-mean background current\n"
+        f"{frame_labels[frame_id]}, "
+        f"{plot_start:%Y-%m-%d} to {plot_end:%Y-%m-%d}"
+    )
+
+    fig.tight_layout(
+        rect=[0, 0, 1, 0.95]
+    )
+
+    plt.show()
+
 # ============================================================
 # DERIVED VARIABLES
 # ============================================================
@@ -447,7 +581,6 @@ for frame_id, d in matched.items():
     d[["Ru", "RH"]] = d[["Ru", "RH"]].replace([np.inf, -np.inf], np.nan)
 
 # ============================================================
-# FIGURES 1-2
 # |URMS,IG|, |URMS,SS|, Ru, Ucurrent, h VS TIME
 # ============================================================
 
@@ -471,10 +604,10 @@ for frame_id in ["F1", "F3"]:
     fig, axes = plt.subplots(5, 1, figsize=(13, 11), sharex=True)
 
     variables = [
-        (horizontal_ig_column, r"$|\mathbf{U}_{\mathrm{RMS,IG}}|$ (m/s)"),
-        (horizontal_ss_column, r"$|\mathbf{U}_{\mathrm{RMS,SS}}|$ (m/s)"),
-        ("Ru", r"$R_u=|\mathbf{U}_{\mathrm{RMS,IG}}|^2/|\mathbf{U}_{\mathrm{RMS,SS}}|^2$"),
-        (current_speed_column, r"$U_{\mathrm{current}}$ (m/s)"),
+        (horizontal_ig_column, r"$\mathbf{U}_{\mathrm{RMS,IG}}$ (m/s)"),
+        (horizontal_ss_column, r"$\mathbf{U}_{\mathrm{RMS,SS}}$ (m/s)"),
+        ("Ru", r"$R_u=\mathbf{U}_{\mathrm{RMS,IG}}^2/\mathbf{U}_{\mathrm{RMS,SS}}^2$"),
+        (current_speed_column, r"$\mathbf{U}_{\mathrm{current}}$ (m/s)"),
         (water_depth_column, r"$h$ (m)"),
     ]
 
