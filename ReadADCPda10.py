@@ -1,13 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Aug 27 16:35:02 2026
-
-@author: WangX3
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Read processed ADCP depth-averaged mean velocity.
+Read processed ADCP 10-min depth-averaged mean velocity.
 
 Workflow
 --------
@@ -18,22 +11,27 @@ Workflow
 
 2. Decode scale factors.
 
-3. Plot the original geographic components:
-       U_E = Eastward depth-averaged velocity
-       U_N = Northward depth-averaged velocity
-       h   = water depth
+3. Identify no-measurement records:
+       - non-finite water depth
+       - water depth below a physically reasonable deployment threshold
 
-   This figure can be compared directly with the KG2.0 report.
+4. Convert no-measurement records to NaN.
 
-4. Rotate U_E and U_N to:
-       cross_shore
-       alongshore
+5. Interpolate ONLY short internal gaps (e.g. <= 30 min).
+   Long gaps and the beginning/end outside the deployment are NOT filled.
 
-   Positive cross-shore:
-       nearshore -> offshore
+6. Plot original East/North velocity and water depth.
 
-   Positive alongshore:
-       90 degrees counterclockwise from positive cross-shore.
+7. Rotate CLEANED/interpolated East/North velocity to
+   cross-shore/alongshore coordinates.
+
+8. Save:
+       time
+       cross-shore velocity
+       alongshore velocity
+       current speed
+       water depth
+   to CSV.
 """
 
 from pathlib import Path
@@ -50,10 +48,41 @@ import pandas as pd
 
 file_path = Path(
     r"C:\dev\Python\LongWaveAnalysis\ADCP"
-    r"\UP\adcp_dvn_201804_f1p1_000_da10.nc"
+    r"\UP\adcp_dvn_201804_f3p3_000_da10.nc"
 )
 
-# Coordinate definition used in the existing analysis
+case_id = "DVN_F3_ADCP_upward"
+
+output_folder = Path(
+    r"C:\dev\Python\LongWaveAnalysis\Processed"
+)
+
+output_folder.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+output_file = (
+    output_folder
+    / f"{case_id}_depth_averaged_current.csv"
+)
+
+# ------------------------------------------------------------
+# Deployment/QC settings
+# ------------------------------------------------------------
+
+# Values around 0 or ~2.3 m correspond to no valid deployment data.
+minimum_valid_water_depth_m = 10.0
+
+# Data are nominally 10-min averaged.
+# Interpolate only gaps up to 30 min.
+maximum_interpolation_gap_samples = 3
+
+
+# ------------------------------------------------------------
+# Cross-shore coordinate definition
+# ------------------------------------------------------------
+
 nearshore_point = (
     52.23317,
     4.3873215,
@@ -74,7 +103,7 @@ def scalar_attribute(
     name,
     default,
 ):
-    """Read a scalar HDF5 attribute."""
+    """Read scalar HDF5 attribute."""
 
     value = dataset.attrs.get(
         name,
@@ -90,20 +119,14 @@ def read_scaled_variable(
     dataset,
 ):
     """
-    Read a complete HDF5 variable and apply
+    Read complete HDF5 variable and apply
     scale_factor/add_offset.
-
-    Explicit fill values are converted to NaN.
     """
 
     raw = np.asarray(
         dataset[...],
         dtype=np.float64,
     )
-
-    # --------------------------------------------------------
-    # Fill values
-    # --------------------------------------------------------
 
     invalid = np.zeros(
         raw.shape,
@@ -123,13 +146,11 @@ def read_scaled_variable(
         ).ravel()
 
         for fill_value in fill_values:
-            invalid |= (
-                raw == float(fill_value)
-            )
 
-    # --------------------------------------------------------
-    # Scale
-    # --------------------------------------------------------
+            invalid |= (
+                raw
+                == float(fill_value)
+            )
 
     scale = scalar_attribute(
         dataset,
@@ -151,6 +172,126 @@ def read_scaled_variable(
     values[invalid] = np.nan
 
     return values
+
+
+def interpolate_short_internal_gaps(
+    dataframe,
+    columns,
+    maximum_gap_samples,
+):
+    """
+    Interpolate only NaN runs whose length is <= maximum_gap_samples.
+
+    Important:
+    - gaps at beginning/end are NOT interpolated
+    - long internal gaps are NOT partially interpolated
+    """
+
+    result = dataframe.copy()
+
+    result = (
+        result
+        .set_index("time")
+    )
+
+    for column in columns:
+
+        series = result[column].copy()
+
+        missing = series.isna()
+
+        if not missing.any():
+            continue
+
+        # Candidate interpolation over all internal gaps.
+        interpolated = (
+            series
+            .interpolate(
+                method="time",
+                limit_area="inside",
+            )
+        )
+
+        # Identify consecutive missing runs.
+        group_number = (
+            missing
+            .ne(missing.shift())
+            .cumsum()
+        )
+
+        groups = (
+            pd.DataFrame(
+                {
+                    "missing": missing,
+                    "group": group_number,
+                },
+                index=series.index,
+            )
+            .loc[missing]
+            .groupby("group")
+        )
+
+        for _, group in groups:
+
+            gap_index = group.index
+
+            gap_length = len(
+                gap_index
+            )
+
+            if (
+                gap_length
+                > maximum_gap_samples
+            ):
+                continue
+
+            first_position = (
+                series.index
+                .get_loc(
+                    gap_index[0]
+                )
+            )
+
+            last_position = (
+                series.index
+                .get_loc(
+                    gap_index[-1]
+                )
+            )
+
+            # Do not extrapolate at beginning/end.
+            if (
+                first_position == 0
+                or last_position
+                == len(series) - 1
+            ):
+                continue
+
+            before = series.iloc[
+                first_position - 1
+            ]
+
+            after = series.iloc[
+                last_position + 1
+            ]
+
+            if (
+                np.isfinite(before)
+                and np.isfinite(after)
+            ):
+
+                series.loc[
+                    gap_index
+                ] = interpolated.loc[
+                    gap_index
+                ]
+
+        result[column] = series
+
+    return (
+        result
+        .reset_index()
+    )
 
 
 def rotate_enu_to_cross_along(
@@ -178,11 +319,6 @@ def rotate_enu_to_cross_along(
         dtype=float,
     )
 
-    if east.shape != north.shape:
-        raise ValueError(
-            "east and north must have the same shape."
-        )
-
     lat1, lon1 = map(
         float,
         point_from,
@@ -193,17 +329,25 @@ def rotate_enu_to_cross_along(
         point_to,
     )
 
-    # --------------------------------------------------------
-    # Local geographic -> East/North displacement
-    # --------------------------------------------------------
+    earth_radius_m = (
+        6_371_000.0
+    )
 
-    earth_radius_m = 6_371_000.0
+    lat1_rad = np.deg2rad(
+        lat1
+    )
 
-    lat1_rad = np.deg2rad(lat1)
-    lat2_rad = np.deg2rad(lat2)
+    lat2_rad = np.deg2rad(
+        lat2
+    )
 
-    lon1_rad = np.deg2rad(lon1)
-    lon2_rad = np.deg2rad(lon2)
+    lon1_rad = np.deg2rad(
+        lon1
+    )
+
+    lon2_rad = np.deg2rad(
+        lon2
+    )
 
     mean_lat_rad = (
         0.5
@@ -219,7 +363,9 @@ def rotate_enu_to_cross_along(
             lon2_rad
             - lon1_rad
         )
-        * np.cos(mean_lat_rad)
+        * np.cos(
+            mean_lat_rad
+        )
     )
 
     delta_north_m = (
@@ -230,20 +376,20 @@ def rotate_enu_to_cross_along(
         )
     )
 
-    transect_length_m = np.hypot(
-        delta_east_m,
-        delta_north_m,
+    transect_length_m = (
+        np.hypot(
+            delta_east_m,
+            delta_north_m,
+        )
     )
 
     if transect_length_m == 0:
+
         raise ValueError(
             "The two transect points are identical."
         )
 
-    # --------------------------------------------------------
-    # Cross-shore unit vector
-    # --------------------------------------------------------
-
+    # Positive cross-shore unit vector.
     cross_east = (
         delta_east_m
         / transect_length_m
@@ -254,17 +400,15 @@ def rotate_enu_to_cross_along(
         / transect_length_m
     )
 
-    # --------------------------------------------------------
-    # Alongshore unit vector
-    # 90 deg counterclockwise from cross-shore
-    # --------------------------------------------------------
+    # Positive alongshore:
+    # 90° counterclockwise.
+    along_east = (
+        -cross_north
+    )
 
-    along_east = -cross_north
-    along_north = cross_east
-
-    # --------------------------------------------------------
-    # Projection
-    # --------------------------------------------------------
+    along_north = (
+        cross_east
+    )
 
     cross_shore = (
         east * cross_east
@@ -276,7 +420,6 @@ def rotate_enu_to_cross_along(
         + north * along_north
     )
 
-    # Bearing clockwise from North
     bearing_deg = (
         np.degrees(
             np.arctan2(
@@ -284,8 +427,8 @@ def rotate_enu_to_cross_along(
                 delta_north_m,
             )
         )
-        + 360.0
-    ) % 360.0
+        + 360
+    ) % 360
 
     metadata = {
         "positive_cross_shore_bearing_deg":
@@ -326,12 +469,10 @@ with h5py.File(
     "r",
 ) as f:
 
-    # --------------------------------------------------------
-    # Time
-    # --------------------------------------------------------
-
-    time_raw = read_scaled_variable(
-        f["time"]
+    time_raw = (
+        read_scaled_variable(
+            f["time"]
+        )
     )
 
     time = pd.to_datetime(
@@ -341,45 +482,50 @@ with h5py.File(
         errors="coerce",
     )
 
-    # --------------------------------------------------------
-    # Depth-averaged mean velocity
-    #
-    # Shape = (3, time)
-    #
-    # component 0 = East
-    # component 1 = North
-    # component 2 = Up
-    # --------------------------------------------------------
-
-    velocity_dabmean = read_scaled_variable(
-        f["velocity_dabmean"]
+    velocity_dabmean = (
+        read_scaled_variable(
+            f[
+                "velocity_dabmean"
+            ]
+        )
     )
 
-    if velocity_dabmean.shape[0] != 3:
+    if (
+        velocity_dabmean.shape[0]
+        != 3
+    ):
+
         raise ValueError(
-            "Expected velocity_dabmean shape "
-            "(3, time), but obtained "
+            "Expected velocity_dabmean "
+            "shape (3,time), got "
             f"{velocity_dabmean.shape}"
         )
 
     velocity_east = (
-        velocity_dabmean[0, :]
+        velocity_dabmean[
+            0,
+            :
+        ]
     )
 
     velocity_north = (
-        velocity_dabmean[1, :]
+        velocity_dabmean[
+            1,
+            :
+        ]
     )
 
     velocity_up = (
-        velocity_dabmean[2, :]
+        velocity_dabmean[
+            2,
+            :
+        ]
     )
 
-    # --------------------------------------------------------
-    # Water depth
-    # --------------------------------------------------------
-
-    water_depth = read_scaled_variable(
-        f["water_depth"]
+    water_depth = (
+        read_scaled_variable(
+            f["water_depth"]
+        )
     )
 
 
@@ -411,117 +557,21 @@ df = (
     .dropna(
         subset=["time"]
     )
-    .sort_values("time")
-    .reset_index(drop=True)
+    .sort_values(
+        "time"
+    )
+    .drop_duplicates(
+        subset=["time"]
+    )
+    .reset_index(
+        drop=True
+    )
 )
 
 
 # ============================================================
-# BASIC INFORMATION
+# TIME INFORMATION
 # ============================================================
-
-print("\nData summary")
-
-print(
-    "Start:",
-    df["time"].iloc[0],
-)
-
-print(
-    "End:  ",
-    df["time"].iloc[-1],
-)
-
-print(
-    "Rows: ",
-    len(df),
-)
-
-dt = (
-    df["time"]
-    .diff()
-    .dt.total_seconds()
-)
-
-print(
-    "Median time interval:",
-    dt.median(),
-    "s",
-)
-
-print(
-    "Median time interval:",
-    dt.median() / 60.0,
-    "min",
-)
-
-print("\nMissing values:")
-print(
-    df[
-        [
-            "depth_avg_east_m_s",
-            "depth_avg_north_m_s",
-            "water_depth_m",
-        ]
-    ]
-    .isna()
-    .sum()
-)
-
-# ============================================================
-# IDENTIFY NO-MEASUREMENT RECORDS
-# ============================================================
-
-# Zero water depth is physically impossible here and therefore
-# identifies the regularly occurring no-measurement periods.
-missing = (
-    ~np.isfinite(df["water_depth_m"])
-    | (df["water_depth_m"] <= 0)
-)
-
-print(
-    "Records identified as no measurement:",
-    missing.sum(),
-)
-
-print(
-    "Fraction missing:",
-    missing.mean(),
-)
-
-
-# Keep original data untouched
-df_plot = df.copy()
-
-columns_to_mask = [
-    "depth_avg_east_m_s",
-    "depth_avg_north_m_s",
-    "depth_avg_up_m_s",
-    "water_depth_m",
-]
-
-df_plot.loc[
-    missing,
-    columns_to_mask,
-] = np.nan
-
-# ============================================================
-# CHECK GAP LENGTHS
-# ============================================================
-
-missing_groups = (
-    missing.ne(missing.shift())
-    .cumsum()
-)
-
-gap_lengths = (
-    df.loc[missing]
-    .groupby(missing_groups[missing])
-    .size()
-)
-
-print("\nMissing-gap lengths in samples:")
-print(gap_lengths.value_counts().sort_index())
 
 dt_seconds = (
     df["time"]
@@ -531,71 +581,257 @@ dt_seconds = (
 )
 
 print(
-    "\nMedian sampling interval:",
-    dt_seconds / 60,
-    "minutes",
+    "\nStart:",
+    df["time"].iloc[0],
 )
 
-print("\nGap durations:")
-for n, count in gap_lengths.value_counts().sort_index().items():
-    print(
-        f"{n} samples = "
-        f"{n * dt_seconds / 60:.1f} min "
-        f"({count} occurrences)"
-    )
+print(
+    "End:",
+    df["time"].iloc[-1],
+)
+
+print(
+    "Rows:",
+    len(df),
+)
+
+print(
+    "Median sampling interval:",
+    dt_seconds / 60,
+    "min",
+)
+
 
 # ============================================================
-# TIME-BASED INTERPOLATION
+# IDENTIFY VALID ADCP DEPLOYMENT RECORDS
 # ============================================================
-interp_columns = [
+
+# Do NOT use East/North == 0 to identify missing data:
+# a real tidal current can cross zero.
+#
+# Instead use water depth as the measurement-state indicator.
+
+valid_measurement = (
+    np.isfinite(
+        df["water_depth_m"]
+    )
+    & (
+        df["water_depth_m"]
+        >= minimum_valid_water_depth_m
+    )
+)
+
+print(
+    "\nValid measured records:",
+    valid_measurement.sum(),
+)
+
+print(
+    "Invalid/no-measurement records:",
+    (~valid_measurement).sum(),
+)
+
+
+# ============================================================
+# DETERMINE DEPLOYMENT PERIOD
+# ============================================================
+
+if not valid_measurement.any():
+
+    raise RuntimeError(
+        "No valid ADCP deployment "
+        "measurements found."
+    )
+
+first_valid_index = (
+    np.flatnonzero(
+        valid_measurement
+    )[0]
+)
+
+last_valid_index = (
+    np.flatnonzero(
+        valid_measurement
+    )[-1]
+)
+
+deployment_start = (
+    df.loc[
+        first_valid_index,
+        "time",
+    ]
+)
+
+deployment_end = (
+    df.loc[
+        last_valid_index,
+        "time",
+    ]
+)
+
+print(
+    "\nDetected deployment start:",
+    deployment_start,
+)
+
+print(
+    "Detected deployment end:",
+    deployment_end,
+)
+
+
+# ============================================================
+# REMOVE PRE-/POST-DEPLOYMENT DATA
+# ============================================================
+
+# This removes the ~2.3-m water-depth values at the
+# beginning and end instead of trying to interpolate them.
+
+df = (
+    df.loc[
+        first_valid_index:
+        last_valid_index
+    ]
+    .copy()
+    .reset_index(
+        drop=True
+    )
+)
+
+
+# Recalculate validity for trimmed record.
+valid_measurement = (
+    np.isfinite(
+        df["water_depth_m"]
+    )
+    & (
+        df["water_depth_m"]
+        >= minimum_valid_water_depth_m
+    )
+)
+
+
+# ============================================================
+# MASK NO-MEASUREMENT PERIODS
+# ============================================================
+
+columns_to_mask = [
     "depth_avg_east_m_s",
     "depth_avg_north_m_s",
     "depth_avg_up_m_s",
     "water_depth_m",
 ]
 
-df_plot = (
-    df_plot
-    .set_index("time")
-)
+df.loc[
+    ~valid_measurement,
+    columns_to_mask,
+] = np.nan
 
-for col in interp_columns:
-
-    df_plot[col] = (
-        df_plot[col]
-        .interpolate(
-            method="time",
-            limit=3,
-            limit_area="inside",
-        )
-    )
-
-df_plot = (
-    df_plot
-    .reset_index()
-)
 
 # ============================================================
-# REPORT-STYLE FIGURE
+# REPORT GAP LENGTHS
+# ============================================================
+
+missing = (
+    ~valid_measurement
+)
+
+missing_groups = (
+    missing
+    .ne(
+        missing.shift()
+    )
+    .cumsum()
+)
+
+gap_lengths = (
+    df.loc[
+        missing
+    ]
+    .groupby(
+        missing_groups[
+            missing
+        ]
+    )
+    .size()
+)
+
+print(
+    "\nNo-measurement gap lengths:"
+)
+
+if len(gap_lengths) > 0:
+
+    for n, count in (
+        gap_lengths
+        .value_counts()
+        .sort_index()
+        .items()
+    ):
+
+        print(
+            f"{n} samples = "
+            f"{n * dt_seconds / 60:.1f} min "
+            f"({count} occurrences)"
+        )
+
+else:
+
+    print(
+        "No gaps detected."
+    )
+
+
+# ============================================================
+# INTERPOLATE ONLY SHORT INTERNAL GAPS
+# ============================================================
+
+interpolation_columns = [
+    "depth_avg_east_m_s",
+    "depth_avg_north_m_s",
+    "depth_avg_up_m_s",
+    "water_depth_m",
+]
+
+df_processed = (
+    interpolate_short_internal_gaps(
+        dataframe=df,
+        columns=interpolation_columns,
+        maximum_gap_samples=
+            maximum_interpolation_gap_samples,
+    )
+)
+
+
+# ============================================================
+# FIGURE 1
+# ORIGINAL EAST/NORTH + WATER DEPTH
 # ============================================================
 
 fig, axes = plt.subplots(
     2,
     1,
-    figsize=(13, 7),
+    figsize=(
+        13,
+        7,
+    ),
     sharex=True,
 )
 
 axes[0].plot(
-    df_plot["time"],
-    df_plot["depth_avg_east_m_s"],
+    df_processed["time"],
+    df_processed[
+        "depth_avg_east_m_s"
+    ],
     linewidth=0.8,
     label=r"$U_E$",
 )
 
 axes[0].plot(
-    df_plot["time"],
-    df_plot["depth_avg_north_m_s"],
+    df_processed["time"],
+    df_processed[
+        "depth_avg_north_m_s"
+    ],
     linewidth=0.8,
     label=r"$U_N$",
 )
@@ -607,16 +843,22 @@ axes[0].axhline(
 )
 
 axes[0].set_ylabel(
-    "Depth-averaged velocity (m/s)"
+    "Depth-averaged\nvelocity (m/s)"
 )
 
 axes[0].legend()
-axes[0].grid(True, alpha=0.25)
+
+axes[0].grid(
+    True,
+    alpha=0.25,
+)
 
 
 axes[1].plot(
-    df_plot["time"],
-    df_plot["water_depth_m"],
+    df_processed["time"],
+    df_processed[
+        "water_depth_m"
+    ],
     linewidth=0.8,
 )
 
@@ -628,41 +870,71 @@ axes[1].set_xlabel(
     "Time"
 )
 
-axes[1].grid(True, alpha=0.25)
+axes[1].grid(
+    True,
+    alpha=0.25,
+)
 
 
 fig.suptitle(
     "ADCP depth-averaged velocity and water depth\n"
-    "Short no-measurement intervals interpolated"
+    f"{case_id}"
 )
 
 fig.tight_layout(
-    rect=[0, 0, 1, 0.94]
+    rect=[
+        0,
+        0,
+        1,
+        0.94,
+    ]
 )
 
 plt.show()
 
 
 # ============================================================
-# ROTATE EAST/NORTH TO CROSS-SHORE / ALONGSHORE
+# ROTATE THE CLEANED / INTERPOLATED VELOCITIES
 # ============================================================
 
+# IMPORTANT:
+# Rotate df_processed, NOT the original raw df.
+
 (
-    df["depth_avg_cross_shore_m_s"],
-    df["depth_avg_alongshore_m_s"],
+    df_processed[
+        "depth_avg_cross_shore_m_s"
+    ],
+    df_processed[
+        "depth_avg_alongshore_m_s"
+    ],
     rotation_info,
 ) = rotate_enu_to_cross_along(
-    east=df["depth_avg_east_m_s"],
-    north=df["depth_avg_north_m_s"],
-    point_from=nearshore_point,
-    point_to=offshore_point,
+    east=df_processed[
+        "depth_avg_east_m_s"
+    ],
+    north=df_processed[
+        "depth_avg_north_m_s"
+    ],
+    point_from=
+        nearshore_point,
+    point_to=
+        offshore_point,
 )
 
 
-# Current-vector magnitude
-df["depth_avg_current_speed_m_s"] = np.hypot(
-    df["depth_avg_cross_shore_m_s"],
-    df["depth_avg_alongshore_m_s"],
+# ============================================================
+# CURRENT SPEED
+# ============================================================
+
+df_processed[
+    "depth_avg_current_speed_m_s"
+] = np.hypot(
+    df_processed[
+        "depth_avg_cross_shore_m_s"
+    ],
+    df_processed[
+        "depth_avg_alongshore_m_s"
+    ],
 )
 
 
@@ -670,23 +942,39 @@ df["depth_avg_current_speed_m_s"] = np.hypot(
 # ROTATION INFORMATION
 # ============================================================
 
-print("\nRotation information")
+print(
+    "\nRotation information:"
+)
 
-for key, value in rotation_info.items():
+for key, value in (
+    rotation_info.items()
+):
+
     print(
         f"{key}: {value}"
     )
 
 
-# Verify rotation preserves horizontal-vector magnitude
+# ============================================================
+# VERIFY MAGNITUDE IS PRESERVED
+# ============================================================
+
 speed_enu = np.hypot(
-    df["depth_avg_east_m_s"],
-    df["depth_avg_north_m_s"],
+    df_processed[
+        "depth_avg_east_m_s"
+    ],
+    df_processed[
+        "depth_avg_north_m_s"
+    ],
 )
 
 speed_rotated = np.hypot(
-    df["depth_avg_cross_shore_m_s"],
-    df["depth_avg_alongshore_m_s"],
+    df_processed[
+        "depth_avg_cross_shore_m_s"
+    ],
+    df_processed[
+        "depth_avg_alongshore_m_s"
+    ],
 )
 
 rotation_error = np.nanmax(
@@ -706,20 +994,26 @@ print(
 
 # ============================================================
 # FIGURE 2
-# ROTATED CURRENT
+# ROTATED DEPTH-AVERAGED CURRENT
 # ============================================================
 
 fig, axes = plt.subplots(
-    3,
+    4,
     1,
-    figsize=(13, 8),
+    figsize=(
+        13,
+        9,
+    ),
     sharex=True,
 )
 
+
 # Cross-shore
 axes[0].plot(
-    df["time"],
-    df["depth_avg_cross_shore_m_s"],
+    df_processed["time"],
+    df_processed[
+        "depth_avg_cross_shore_m_s"
+    ],
 )
 
 axes[0].axhline(
@@ -741,8 +1035,10 @@ axes[0].grid(
 
 # Alongshore
 axes[1].plot(
-    df["time"],
-    df["depth_avg_alongshore_m_s"],
+    df_processed["time"],
+    df_processed[
+        "depth_avg_alongshore_m_s"
+    ],
 )
 
 axes[1].axhline(
@@ -762,10 +1058,12 @@ axes[1].grid(
 )
 
 
-# Speed
+# Current speed
 axes[2].plot(
-    df["time"],
-    df["depth_avg_current_speed_m_s"],
+    df_processed["time"],
+    df_processed[
+        "depth_avg_current_speed_m_s"
+    ],
 )
 
 axes[2].set_ylim(
@@ -777,11 +1075,29 @@ axes[2].set_ylabel(
     "\n(m/s)"
 )
 
-axes[2].set_xlabel(
+axes[2].grid(
+    True,
+    alpha=0.3,
+)
+
+
+# Water depth
+axes[3].plot(
+    df_processed["time"],
+    df_processed[
+        "water_depth_m"
+    ],
+)
+
+axes[3].set_ylabel(
+    r"$h$ (m)"
+)
+
+axes[3].set_xlabel(
     "Time"
 )
 
-axes[2].grid(
+axes[3].grid(
     True,
     alpha=0.3,
 )
@@ -789,11 +1105,93 @@ axes[2].grid(
 
 fig.suptitle(
     "Depth-averaged background current\n"
-    "Cross-shore / alongshore coordinates"
+    f"{case_id}"
 )
 
 fig.tight_layout(
-    rect=[0, 0, 1, 0.94]
+    rect=[
+        0,
+        0,
+        1,
+        0.95,
+    ]
 )
 
 plt.show()
+
+
+# ============================================================
+# SAVE CSV
+# ============================================================
+
+columns_to_save = [
+    "time",
+    "depth_avg_cross_shore_m_s",
+    "depth_avg_alongshore_m_s",
+    "depth_avg_current_speed_m_s",
+    "water_depth_m",
+]
+
+output = (
+    df_processed[
+        columns_to_save
+    ]
+    .copy()
+)
+
+
+# Do not save rows for which the long-gap interpolation
+# deliberately left all current information missing.
+output = (
+    output
+    .dropna(
+        subset=[
+            "depth_avg_cross_shore_m_s",
+            "depth_avg_alongshore_m_s",
+            "water_depth_m",
+        ],
+        how="all",
+    )
+    .reset_index(
+        drop=True
+    )
+)
+
+
+output.to_csv(
+    output_file,
+    index=False,
+)
+
+
+print(
+    "\nSaved processed "
+    "depth-averaged current:"
+)
+
+print(
+    output_file
+)
+
+print(
+    "Rows saved:",
+    len(output),
+)
+
+print(
+    "Start:",
+    output["time"].iloc[0],
+)
+
+print(
+    "End:",
+    output["time"].iloc[-1],
+)
+
+print(
+    "\nMissing values in saved file:"
+)
+
+print(
+    output.isna().sum()
+)
