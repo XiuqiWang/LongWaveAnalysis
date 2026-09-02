@@ -884,7 +884,7 @@ for frame_id in frames_to_plot:
 
 
 # ============================================================
-# FIGURES 1-2
+# FIGURES 1-2 — ORIGINAL HIGHEST-CELL TIME SERIES
 #
 # U_RMS,IG
 # U_RMS,SS
@@ -901,36 +901,15 @@ for frame_id in [
     if frame_id not in matched:
         continue
 
-
     d = (
-        matched[
-            frame_id
-        ]
+        matched[frame_id]
         .loc[
-            (
-                matched[
-                    frame_id
-                ][
-                    "mid_time"
-                ]
-                >= plot_start
-            )
-            &
-            (
-                matched[
-                    frame_id
-                ][
-                    "mid_time"
-                ]
-                < plot_end
-            )
+            (matched[frame_id]["mid_time"] >= plot_start)
+            & (matched[frame_id]["mid_time"] < plot_end)
         ]
-        .sort_values(
-            "mid_time"
-        )
+        .sort_values("mid_time")
         .copy()
     )
-
 
     columns_to_break = [
         horizontal_ig_column,
@@ -945,86 +924,53 @@ for frame_id in [
         columns_to_break,
     )
 
-
     fig, axes = plt.subplots(
         5,
         1,
-        figsize=(
-            13,
-            11,
-        ),
+        figsize=(13, 11),
         sharex=True,
     )
-
 
     variables = [
         (
             horizontal_ig_column,
             r"$U_{h,\mathrm{RMS,IG}}$ (m/s)",
         ),
-
         (
             horizontal_ss_column,
             r"$U_{h,\mathrm{RMS,SS}}$ (m/s)",
         ),
-
         (
             "Ru",
             r"$R_U="
             r"U_{h,\mathrm{RMS,IG}}^2/"
             r"U_{h,\mathrm{RMS,SS}}^2$",
         ),
-
         (
             current_speed_column,
             r"$|\mathbf{U}_{DA}|$ (m/s)",
         ),
-
         (
             water_depth_column,
             r"$h_{\mathrm{ADCP}}$ (m)",
         ),
     ]
 
-
-    for (
-        ax,
-        (
-            column,
-            ylabel,
-        ),
-    ) in zip(
-        axes,
-        variables,
-    ):
-
+    for i, (ax, (column, ylabel)) in enumerate(zip(axes, variables)):
         ax.plot(
             d["mid_time"],
             d[column],
         )
+        ax.set_ylabel(ylabel)
+        ax.grid(True, which="both", alpha=0.3)
 
-        ax.set_ylabel(
-            ylabel
-        )
+        # Ru on logarithmic scale; other panels unchanged.
+        if column == "Ru":
+            ax.set_yscale("log")
+        elif i < 4:
+            ax.set_ylim(bottom=0)
 
-        ax.grid(
-            True,
-            alpha=0.3,
-        )
-
-
-    # Nonnegative quantities
-    for ax in axes[:4]:
-
-        ax.set_ylim(
-            bottom=0
-        )
-
-
-    axes[-1].set_xlabel(
-        "Time"
-    )
-
+    axes[-1].set_xlabel("Time")
 
     fig.suptitle(
         "Velocity IG/SS modulation and "
@@ -1034,14 +980,231 @@ for frame_id in [
         f"{plot_end:%Y-%m-%d}"
     )
 
+    fig.tight_layout(
+        rect=[0, 0, 1, 0.95]
+    )
+
+    plt.show()
+
+
+# ============================================================
+# ADDITIONAL FIGURES — FOUR-CELL VELOCITY VARIANCE
+#
+# TOTAL HORIZONTAL VELOCITY VARIANCE, FOUR HR ADCP CELLS
+#   1. IG-band variance
+#   2. SS-band variance
+#   3. Ru = sigma_h,IG^2 / sigma_h,SS^2
+#   4. DEPTH-AVERAGED CURRENT SPEED |U_DA|
+#
+# Cell heights are read directly from the velocity statistics file.
+# The rest of the analyses below continue to use the original
+# highest-cell matched data and are unchanged.
+# ============================================================
+
+for frame_id in [
+    "F1",
+    "F3",
+]:
+
+    if frame_id not in depth_averaged:
+        continue
+
+    # --------------------------------------------------------
+    # All available processed HR ADCP cells for this frame
+    # --------------------------------------------------------
+    d_cells = (
+        df_vel.loc[
+            (df_vel["frame_id"] == frame_id)
+            & (df_vel["mid_time"] >= plot_start)
+            & (df_vel["mid_time"] < plot_end)
+        ]
+        .copy()
+    )
+
+    if d_cells.empty:
+        continue
+
+    # Total horizontal velocity variances.
+    # horizontal_*_rms_m_s^2 = sigma_u^2 + sigma_v^2
+    d_cells["ig_horizontal_variance_m2_s2"] = (
+        d_cells[horizontal_ig_column] ** 2
+    )
+
+    d_cells["ss_horizontal_variance_m2_s2"] = (
+        d_cells[horizontal_ss_column] ** 2
+    )
+
+    d_cells["Ru_all_cells"] = (
+        d_cells["ig_horizontal_variance_m2_s2"]
+        / d_cells["ss_horizontal_variance_m2_s2"]
+    )
+
+    d_cells["Ru_all_cells"] = (
+        d_cells["Ru_all_cells"]
+        .replace([np.inf, -np.inf], np.nan)
+    )
+
+    # Cell number -> representative height above frame bottom.
+    # Use the median in case the same cell height is repeated
+    # across many burst rows.
+    cell_height_map = (
+        d_cells[[cell_column, height_column]]
+        .dropna()
+        .groupby(cell_column)[height_column]
+        .median()
+        .to_dict()
+    )
+
+    cells = sorted(
+        d_cells[cell_column]
+        .dropna()
+        .unique()
+    )
+
+    if len(cells) != 4:
+        print(
+            f"WARNING: {frame_id} has {len(cells)} processed cells "
+            f"in the velocity file: {cells}"
+        )
+
+    # --------------------------------------------------------
+    # Depth-averaged current speed
+    # --------------------------------------------------------
+    d_current = (
+        depth_averaged[frame_id]
+        .loc[
+            (depth_averaged[frame_id]["current_time"] >= plot_start)
+            & (depth_averaged[frame_id]["current_time"] < plot_end),
+            ["current_time", current_speed_column],
+        ]
+        .sort_values("current_time")
+        .copy()
+    )
+
+    # Break gaps in the current series without changing the data.
+    current_gap = (
+        d_current["current_time"]
+        .diff()
+        .dt.total_seconds()
+        > plot_gap_seconds
+    )
+    d_current.loc[current_gap, current_speed_column] = np.nan
+
+    # --------------------------------------------------------
+    # Plot
+    # --------------------------------------------------------
+    fig, axes = plt.subplots(
+        4,
+        1,
+        figsize=(13, 10),
+        sharex=True,
+    )
+
+    for cell in cells:
+
+        x = (
+            d_cells.loc[
+                d_cells[cell_column] == cell,
+                [
+                    "mid_time",
+                    "ig_horizontal_variance_m2_s2",
+                    "ss_horizontal_variance_m2_s2",
+                    "Ru_all_cells",
+                ],
+            ]
+            .sort_values("mid_time")
+            .drop_duplicates("mid_time")
+            .copy()
+        )
+
+        x = break_plot_gaps(
+            x,
+            [
+                "ig_horizontal_variance_m2_s2",
+                "ss_horizontal_variance_m2_s2",
+                "Ru_all_cells",
+            ],
+        )
+
+        z = cell_height_map.get(cell, np.nan)
+
+        if np.isfinite(z):
+            label = (
+                f"Cell {int(cell)} "
+                f"(z={z:.2f} m)"
+            )
+        else:
+            label = f"Cell {int(cell)}"
+
+        axes[0].plot(
+            x["mid_time"],
+            x["ig_horizontal_variance_m2_s2"],
+            linewidth=0.9,
+            label=label,
+        )
+
+        axes[1].plot(
+            x["mid_time"],
+            x["ss_horizontal_variance_m2_s2"],
+            linewidth=0.9,
+            label=label,
+        )
+
+        axes[2].plot(
+            x["mid_time"],
+            x["Ru_all_cells"],
+            linewidth=0.9,
+            label=label,
+        )
+
+    axes[3].plot(
+        d_current["current_time"],
+        d_current[current_speed_column],
+        linewidth=1.0,
+    )
+
+    axes[0].set_ylabel(
+        r"$\sigma_{h,IG}^{2}$ (m$^2$ s$^{-2}$)"
+    )
+
+    axes[1].set_ylabel(
+        r"$\sigma_{h,SS}^{2}$ (m$^2$ s$^{-2}$)"
+    )
+
+    axes[2].set_ylabel(
+        r"$R_U=\sigma_{h,IG}^{2}/\sigma_{h,SS}^{2}$"
+    )
+
+    axes[3].set_ylabel(
+        r"$|\mathbf{U}_{DA}|$ (m/s)"
+    )
+
+    axes[3].set_xlabel("Time")
+
+    # Velocity variances and Ru span orders of magnitude.
+    for ax in axes:
+        ax.grid(True, which="both", alpha=0.3)
+
+    for ax in axes[:3]:
+        ax.set_yscale("log")
+
+    axes[3].set_ylim(bottom=0)
+
+    # Heights are shown in the velocity-panel legends.
+    axes[0].legend(ncol=2, fontsize=9)
+    axes[1].legend(ncol=2, fontsize=9)
+    axes[2].legend(ncol=2, fontsize=9)
+
+    fig.suptitle(
+        "IG/SS horizontal velocity variance and "
+        "depth-averaged tidal current\n"
+        f"{frame_labels[frame_id]}, "
+        f"{plot_start:%Y-%m-%d} to "
+        f"{plot_end:%Y-%m-%d}"
+    )
 
     fig.tight_layout(
-        rect=[
-            0,
-            0,
-            1,
-            0.95,
-        ]
+        rect=[0, 0, 1, 0.95]
     )
 
     plt.show()
@@ -1183,16 +1346,16 @@ for frame_id in [
         )
 
 
-        # m0 panels
-        if i < 2:
+        # m0 and RH panels
+        if i < 3:
 
             ax.set_yscale(
                 "log"
             )
 
 
-        # RH and current speed
-        elif i < 4:
+        # Current speed
+        elif i == 3:
 
             ax.set_ylim(
                 bottom=0
@@ -1223,10 +1386,168 @@ for frame_id in [
     )
 
     plt.show()
+    
+# ============================================================
+# FIGURES
+#
+# U_RMS,IG,cross& along
+# U_RMS,SS,cross& along
+# DEPTH-AVERAGED CURRENT SPEED
+# ============================================================
+
+for frame_id in [
+    "F1",
+    "F3",
+]:
+
+    if frame_id not in matched:
+        continue
+
+
+    d = (
+        matched[
+            frame_id
+        ]
+        .loc[
+            (
+                matched[
+                    frame_id
+                ][
+                    "mid_time"
+                ]
+                >= plot_start
+            )
+            &
+            (
+                matched[
+                    frame_id
+                ][
+                    "mid_time"
+                ]
+                < plot_end
+            )
+        ]
+        .sort_values(
+            "mid_time"
+        )
+        .copy()
+    )
+
+
+    columns_to_break = [
+        cross_ig_column,
+        along_ig_column,
+        cross_ss_column,
+        along_ss_column,
+        current_speed_column,
+    ]
+
+    d = break_plot_gaps(
+        d,
+        columns_to_break,
+    )
+
+
+    fig, axes = plt.subplots(
+        5,
+        1,
+        figsize=(
+            13,
+            11,
+        ),
+        sharex=True,
+    )
+
+
+    variables = [
+        (
+            cross_ig_column,
+            r"$U_{\mathrm{RMS,IG}}$ (m/s)",
+        ),
+
+        (
+            along_ss_column,
+            r"$V_{\mathrm{RMS,IG}}$ (m/s)",
+        ),
+
+        (
+            cross_ss_column,
+            r"$U_{\mathrm{RMS,SS}}$ (m/s)",
+        ),
+        (
+            along_ss_column,
+            r"$V_{\mathrm{RMS,SS}}$ (m/s)",
+        ),
+
+        (
+            current_speed_column,
+            r"$|\mathbf{U}_{DA}|$ (m/s)",
+        ),
+    ]
+
+
+    for (
+        ax,
+        (
+            column,
+            ylabel,
+        ),
+    ) in zip(
+        axes,
+        variables,
+    ):
+
+        ax.plot(
+            d["mid_time"],
+            d[column],
+        )
+
+        ax.set_ylabel(
+            ylabel
+        )
+
+        ax.grid(
+            True,
+            alpha=0.3,
+        )
+
+
+    # Nonnegative quantities
+    for ax in axes[:4]:
+
+        ax.set_ylim(
+            bottom=0
+        )
+
+
+    axes[-1].set_xlabel(
+        "Time"
+    )
+
+
+    fig.suptitle(
+        "Velocity IG/SS modulation and "
+        "depth-averaged tidal current\n"
+        f"{frame_labels[frame_id]}, "
+        f"{plot_start:%Y-%m-%d} to "
+        f"{plot_end:%Y-%m-%d}"
+    )
+
+
+    fig.tight_layout(
+        rect=[
+            0,
+            0,
+            1,
+            0.95,
+        ]
+    )
+
+    plt.show()
 
 
 # ============================================================
-# FIGURE 5
+# FIGURE
 #
 # Ru VS DEPTH-AVERAGED CURRENT SPEED
 # RH VS DEPTH-AVERAGED CURRENT SPEED
