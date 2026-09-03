@@ -316,20 +316,149 @@ for k, val in {
 }.items():
     burst[k] = val
 
-legacy_current_cols = [
-    "depth_avg_cross_current_m_s", "depth_avg_along_current_m_s", "depth_avg_current_speed_m_s",
-    "depth_avg_current_direction_deg", "current_profile_cell_count",
-    "cell_mean_cross_current_m_s", "cell_mean_along_current_m_s",
-    "cross_background_change_m_s", "along_background_change_m_s",
-]
 if burst_file.exists():
-    old = pd.read_csv(burst_file, parse_dates=["start_time", "end_time", "mid_time"])
-    old = old.loc[old["case_id"] != case_id].drop(columns=legacy_current_cols, errors="ignore")
-    burst = pd.concat([old, burst], ignore_index=True)
-burst.sort_values(["case_id", "mid_time", "cell_number"]).to_csv(burst_file, index=False)
-print(f"Saved burst spectral/RMS statistics (no layer-mean current columns):\n{burst_file}")
+    old = pd.read_csv(burst_file, parse_dates=["start_time", "end_time", "mid_time"],)
+
+    # Remove the old results for the case being processed.
+    # Results from the other cases are retained.
+    old = old.loc[old["case_id"] != case_id]
+
+    burst = pd.concat([old, burst], ignore_index=True,)
+
+burst = burst.sort_values(["case_id", "mid_time", "cell_number"])
+burst.to_csv(burst_file,index=False,)
+print(f"Saved burst spectral/RMS statistics:\n{burst_file}")
 
 # ----------------------------- PLOTS -----------------------------
+# ---------------- MEAN / MEDIAN BURST AUTOSPECTRA ----------------
+# Suu, Svv and Suv have already been calculated for every accepted burst
+# in the processing loop above. The dataframe `spectra` stores the
+# burst-resolved Suu and Svv on the Welch frequency grid, so this block
+# only aggregates those already-computed burst spectra across time.
+
+if not spectra.empty:
+
+    def plot_aggregate_velocity_spectra(statistic):
+        """Plot mean or median of the already-computed burst autospectra."""
+        statistic = statistic.lower()
+        if statistic not in {"mean", "median"}:
+            raise ValueError("statistic must be 'mean' or 'median'")
+
+        fig, axes = plt.subplots(
+            2, 2, figsize=(12, 8), sharex=True, sharey=True
+        )
+        axes = axes.ravel()
+
+        legend_handles = None
+        legend_labels = None
+
+        for ax, c in zip(axes, cells):
+            s = spectra.loc[
+                spectra["cell_number"] == c["cell_number"]
+            ].copy()
+
+            if s.empty:
+                ax.set_visible(False)
+                continue
+
+            grouped = s.groupby("frequency_hz", sort=True)
+
+            if statistic == "mean":
+                agg = grouped[[
+                    "cross_psd_m2_s2_hz",
+                    "along_psd_m2_s2_hz",
+                ]].mean()
+
+                f = agg.index.to_numpy(float)
+                Suu = agg["cross_psd_m2_s2_hz"].to_numpy(float)
+                Svv = agg["along_psd_m2_s2_hz"].to_numpy(float)
+
+            else:
+                med = grouped[[
+                    "cross_psd_m2_s2_hz",
+                    "along_psd_m2_s2_hz",
+                ]].median()
+                q25 = grouped[[
+                    "cross_psd_m2_s2_hz",
+                    "along_psd_m2_s2_hz",
+                ]].quantile(0.25)
+                q75 = grouped[[
+                    "cross_psd_m2_s2_hz",
+                    "along_psd_m2_s2_hz",
+                ]].quantile(0.75)
+
+                f = med.index.to_numpy(float)
+                Suu = med["cross_psd_m2_s2_hz"].to_numpy(float)
+                Svv = med["along_psd_m2_s2_hz"].to_numpy(float)
+
+                # Interquartile spread across bursts
+                ax.fill_between(
+                    f,
+                    q25["cross_psd_m2_s2_hz"].to_numpy(float),
+                    q75["cross_psd_m2_s2_hz"].to_numpy(float),
+                    alpha=0.12,
+                )
+                ax.fill_between(
+                    f,
+                    q25["along_psd_m2_s2_hz"].to_numpy(float),
+                    q75["along_psd_m2_s2_hz"].to_numpy(float),
+                    alpha=0.12,
+                )
+
+            ig_patch = ax.axvspan(
+                ig_low_hz, ig_high_hz, alpha=0.16, label="IG band"
+            )
+            ss_patch = ax.axvspan(
+                ss_low_hz, min(ss_high_hz, 0.5 * fs),
+                alpha=0.10, label="Sea-swell band"
+            )
+
+            line_u, = ax.plot(
+                f, Suu, linewidth=1.4,
+                label=f"Cross-shore {statistic}"
+            )
+            line_v, = ax.plot(
+                f, Svv, linewidth=1.4,
+                label=f"Alongshore {statistic}"
+            )
+
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_xlabel("Frequency (Hz)")
+            ax.set_ylabel(r"PSD ((m/s)$^2$/Hz)")
+            ax.set_title(
+                f"Cell {c['cell_number']}: z={c['z_bin_m']:.3f} m"
+            )
+            ax.grid(True, which="both", alpha=0.22)
+
+            if legend_handles is None:
+                legend_handles = [line_u, line_v, ig_patch, ss_patch]
+                legend_labels = [
+                    f"Cross-shore {statistic}",
+                    f"Alongshore {statistic}",
+                    "IG band",
+                    "Sea-swell band",
+                ]
+
+        fig.suptitle(
+            f"{statistic.capitalize()} ADCP-HR velocity autospectra "
+            f"({case_label})"
+        )
+
+        if legend_handles is not None:
+            fig.legend(
+                legend_handles, legend_labels,
+                loc="upper center", ncol=4,
+                bbox_to_anchor=(0.5, 0.955),
+            )
+
+        fig.tight_layout(rect=[0, 0, 1, 0.90])
+        plt.show()
+
+
+    plot_aggregate_velocity_spectra("mean")
+    plot_aggregate_velocity_spectra("median")
+    
 def plot_vertical_rms(column, title, ylabel):
     fig, axes = plt.subplots(len(cells), 1, figsize=(12, 2.2 * len(cells)), sharex=True)
     axes = np.atleast_1d(axes)
@@ -366,3 +495,5 @@ ax.grid(True, alpha=0.25)
 ax.set_title(f"IG/SS velocity-variance ratio — Cell {highest['cell_number']}, z={highest['z_bin_m']:.3f} m ({case_label})")
 fig.tight_layout()
 plt.show()
+
+
