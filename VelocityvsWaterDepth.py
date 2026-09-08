@@ -159,7 +159,7 @@ plot_start = pd.Timestamp(
 )
 
 plot_end = pd.Timestamp(
-    "2018-05-15 00:00:00",
+    "2018-04-19 00:00:00",
     tz="UTC",
 )
 
@@ -1750,7 +1750,6 @@ plt.show()
 # ============================================================
 # TIDAL-TIMESCALE COHERENCE + PHASE
 # ============================================================
-
 grid_minutes = 10
 max_interp_gap = 6          # 1 hour
 welch_days = 5
@@ -2065,10 +2064,10 @@ for frame_id in frames_to_plot:
         & (matched[frame_id]["mid_time"] < plot_end)
     ].copy()
 
-    # Current strength
-    d["abs_along_current"] = np.abs(
-        d[current_along_column]
-    )
+    # Total depth-averaged current speed for the x-axis.
+    # Flood/ebb classification is still based on the SIGN of
+    # the alongshore depth-averaged current.
+    d["abs_U_DA"] = d[current_speed_column]
 
     # Flood / ebb classification
     d["tidal_direction"] = np.where(
@@ -2107,13 +2106,13 @@ for frame_id in frames_to_plot:
             x = d.loc[
                 d["tidal_direction"] == direction,
                 [
-                    "abs_along_current",
+                    "abs_U_DA",
                     column,
                 ],
             ].dropna()
 
             ax.scatter(
-                x["abs_along_current"],
+                x["abs_U_DA"],
                 x[column],
                 s=20,
                 alpha=0.4,
@@ -2125,14 +2124,14 @@ for frame_id in frames_to_plot:
             if len(x) >= 3:
 
                 slope, intercept = np.polyfit(
-                    x["abs_along_current"],
+                    x["abs_U_DA"],
                     x[column],
                     1,
                 )
 
                 xx = np.linspace(
-                    x["abs_along_current"].min(),
-                    x["abs_along_current"].max(),
+                    x["abs_U_DA"].min(),
+                    x["abs_U_DA"].max(),
                     100,
                 )
 
@@ -2149,7 +2148,7 @@ for frame_id in frames_to_plot:
                 )
 
         ax.set_xlabel(
-            r"$|U_{\mathrm{DA,along}}|$ (m/s)"
+            r"$|\mathbf{U}_{DA}|$ (m/s)"
         )
 
         ax.set_ylabel(
