@@ -15,13 +15,14 @@ The workflow mirrors the velocity script:
 5. estimate mean water depth;
 6. detrend each block;
 7. calculate a Welch autospectrum;
-8. correct for depth attenuation using linear wave theory;
-9. calculate Hm0,IG and pressure-recoverable Hm0,SS.
+8. correct for depth attenuation using linear wave theory up to one
+   fixed candidate cutoff frequency;
+9. check Kp and 1/Kp at that candidate cutoff for every burst;
+10. append an equilibrium f^-4 tail above the cutoff;
+11. calculate Hm0,IG and direct/tail-extended Hm0,SS.
 
-Important: near-bed pressure cannot reliably recover arbitrarily high
-sea-swell frequencies. Frequencies needing an amplitude correction greater
-than max_pressure_amplitude_gain are excluded, and the effective upper
-sea-swell frequency is saved for every block.
+Important: the fixed cutoff is used only for bursts where the amplitude
+gain 1/Kp at candidate_fc_hz does not exceed max_pressure_amplitude_gain.
 """
 
 from pathlib import Path
@@ -55,7 +56,7 @@ output_folder.mkdir(parents=True, exist_ok=True)
 # In the processed file each 4-Hz pressure value is repeated on the
 # synchronized 16-Hz ADV time grid.
 native_pressure_fs_hz = 4.0
-z_pressure_m = 0.89 # Change for Frame!
+z_pressure_m = 0.90 # Change for Frame!
 
 rho_water_kg_m3 = 1025.0
 gravity_m_s2 = 9.81
@@ -66,14 +67,26 @@ welch_segment_seconds = 512.0
 overlap_fraction = 0.5
 
 ig_low_hz = 0.005
-ig_high_hz = 0.05
+ig_high_hz = 0.04
 
-ss_low_hz = 0.05
+ss_low_hz = 0.04
 ss_high_hz = 1.0
 
-# Common upper sea-swell cutoff used for cross-frame comparisons.
-# Keep this identical in every case script.
-common_ss_high_hz = 0.185
+# Fixed candidate pressure-correction cutoff for all bursts.
+# Below this frequency, surface elevation is reconstructed directly
+# from pressure using the linear pressure-response factor Kp.
+# Above this frequency, the unresolved sea-swell spectrum is extended
+# with an equilibrium f^-4 tail.
+candidate_fc_hz = 0.20
+
+# Maximum acceptable free-surface amplitude gain at candidate_fc_hz:
+#     gain = 1 / Kp
+# A burst is considered safe for the fixed cutoff only when gain <= this.
+max_pressure_amplitude_gain = 15.0
+
+# High-frequency equilibrium-tail settings.
+tail_exponent = 4.0
+tail_anchor_bins = 5
 
 minimum_valid_fraction = 0.98
 minimum_block_fraction = 0.95
@@ -83,13 +96,10 @@ maximum_depth_deviation_m = 3.0
 
 detrend_order = 2
 
-# Maximum permitted free-surface amplitude gain, 1/Kp.
-max_pressure_amplitude_gain = 10.0
-
-if not (ss_low_hz < common_ss_high_hz <= ss_high_hz):
+if not (ss_low_hz < candidate_fc_hz < ss_high_hz):
     raise ValueError(
-        "common_ss_high_hz must be greater than ss_low_hz and "
-        "no larger than ss_high_hz."
+        "candidate_fc_hz must lie strictly inside the requested "
+        "sea-swell band."
     )
 
 
@@ -357,6 +367,226 @@ def pressure_to_surface_spectrum(
     )
 
     return eta_psd, kp, amplitude_gain, reliable, wavenumber
+
+
+def build_fixed_fc_surface_spectrum(
+    frequency,
+    pressure_head_psd,
+    water_depth_m,
+    sensor_height_above_bed_m,
+    candidate_fc_hz,
+    ss_high_hz,
+    maximum_amplitude_gain=10.0,
+    tail_exponent=4.0,
+    tail_anchor_bins=5,
+    gravity=9.81,
+):
+    """
+    Reconstruct surface elevation with one fixed cutoff for all bursts.
+
+    1. Compute Kp and gain = 1/Kp over the full frequency vector.
+    2. Evaluate Kp and gain at candidate_fc_hz.
+    3. If gain(candidate_fc_hz) <= maximum_amplitude_gain, reconstruct
+       S_eta = S_pressure_head / Kp^2 for f < candidate_fc_hz.
+    4. For candidate_fc_hz <= f < ss_high_hz, append an equilibrium
+       f^(-tail_exponent) tail.
+
+    The tail level is estimated robustly from the last several directly
+    reconstructed bins below candidate_fc_hz. The equivalent spectrum
+    at the cutoff is
+
+        S_fc = median[S_eta(f_i) * (f_i / fc)^tail_exponent]
+
+    so that
+
+        S_tail(f) = S_fc * (f / fc)^(-tail_exponent).
+
+    Returns
+    -------
+    eta_psd_direct
+        Direct pressure-derived surface-elevation spectrum below fc.
+    eta_psd_extended
+        Direct spectrum below fc + equilibrium tail above fc.
+    eta_psd_tail
+        Tail only; NaN outside the tail interval.
+    kp
+        Pressure response factor at every frequency.
+    amplitude_gain
+        1/Kp at every frequency.
+    candidate_kp
+        Kp evaluated at candidate_fc_hz.
+    candidate_gain
+        1/Kp evaluated at candidate_fc_hz.
+    candidate_fc_safe
+        True when candidate_gain <= maximum_amplitude_gain.
+    tail_level_at_fc
+        Estimated S_eta(fc) used to anchor the f^-4 tail.
+    wavenumber
+        Wavenumber at every frequency.
+    """
+    frequency = np.asarray(frequency, dtype=float)
+    pressure_head_psd = np.asarray(pressure_head_psd, dtype=float)
+
+    kp, wavenumber = pressure_response_factor(
+        frequency_hz=frequency,
+        water_depth_m=water_depth_m,
+        sensor_height_above_bed_m=sensor_height_above_bed_m,
+        gravity=gravity,
+    )
+
+    amplitude_gain = np.full_like(kp, np.inf, dtype=float)
+    valid_kp = np.isfinite(kp) & (kp > 0)
+
+    np.divide(
+        1.0,
+        kp,
+        out=amplitude_gain,
+        where=valid_kp,
+    )
+
+    # Evaluate the response factor exactly at the fixed candidate fc
+    candidate_kp_array, _ = pressure_response_factor(
+        frequency_hz=np.array([candidate_fc_hz], dtype=float),
+        water_depth_m=water_depth_m,
+        sensor_height_above_bed_m=sensor_height_above_bed_m,
+        gravity=gravity,
+    )
+
+    candidate_kp = float(candidate_kp_array[0])
+    candidate_gain = (
+        1.0 / candidate_kp
+        if np.isfinite(candidate_kp) and candidate_kp > 0
+        else np.inf
+    )
+
+    candidate_fc_safe = bool(
+        np.isfinite(candidate_gain)
+        and candidate_gain <= maximum_amplitude_gain
+    )
+
+    eta_psd_direct = np.full_like(
+        pressure_head_psd,
+        np.nan,
+        dtype=float,
+    )
+    eta_psd_extended = np.full_like(
+        pressure_head_psd,
+        np.nan,
+        dtype=float,
+    )
+    eta_psd_tail = np.full_like(
+        pressure_head_psd,
+        np.nan,
+        dtype=float,
+    )
+
+    # Do not use the fixed cutoff if the pressure amplification at fc
+    # fails the selected safety criterion.
+    if not candidate_fc_safe:
+        return (
+            eta_psd_direct,
+            eta_psd_extended,
+            eta_psd_tail,
+            kp,
+            amplitude_gain,
+            candidate_kp,
+            candidate_gain,
+            candidate_fc_safe,
+            np.nan,
+            wavenumber,
+        )
+
+    direct_mask = (
+        np.isfinite(frequency)
+        & np.isfinite(pressure_head_psd)
+        & np.isfinite(kp)
+        & (kp > 0)
+        & (frequency >= 0)
+        & (frequency < candidate_fc_hz)
+    )
+
+    eta_psd_direct[direct_mask] = (
+        pressure_head_psd[direct_mask]
+        / kp[direct_mask] ** 2
+    )
+    eta_psd_extended[direct_mask] = eta_psd_direct[direct_mask]
+
+    # Anchor the equilibrium tail using the last several finite bins
+    # immediately below fc. This is less sensitive to one noisy bin.
+    anchor_idx = np.flatnonzero(
+        direct_mask
+        & np.isfinite(eta_psd_direct)
+        & (eta_psd_direct > 0)
+        & (frequency >= ss_low_hz)
+    )
+
+    if anchor_idx.size < 2:
+        return (
+            eta_psd_direct,
+            eta_psd_extended,
+            eta_psd_tail,
+            kp,
+            amplitude_gain,
+            candidate_kp,
+            candidate_gain,
+            candidate_fc_safe,
+            np.nan,
+            wavenumber,
+        )
+
+    anchor_idx = anchor_idx[-max(2, int(tail_anchor_bins)):]
+
+    anchor_f = frequency[anchor_idx]
+    anchor_S = eta_psd_direct[anchor_idx]
+
+    # Estimate the equivalent spectral density at exactly fc.
+    tail_level_at_fc = float(
+        np.nanmedian(
+            anchor_S
+            * (anchor_f / candidate_fc_hz) ** tail_exponent
+        )
+    )
+
+    if not np.isfinite(tail_level_at_fc) or tail_level_at_fc <= 0:
+        return (
+            eta_psd_direct,
+            eta_psd_extended,
+            eta_psd_tail,
+            kp,
+            amplitude_gain,
+            candidate_kp,
+            candidate_gain,
+            candidate_fc_safe,
+            np.nan,
+            wavenumber,
+        )
+
+    tail_mask = (
+        np.isfinite(frequency)
+        & (frequency >= candidate_fc_hz)
+        & (frequency < ss_high_hz)
+        & (frequency > 0)
+    )
+
+    eta_psd_tail[tail_mask] = (
+        tail_level_at_fc
+        * (frequency[tail_mask] / candidate_fc_hz) ** (-tail_exponent)
+    )
+
+    eta_psd_extended[tail_mask] = eta_psd_tail[tail_mask]
+
+    return (
+        eta_psd_direct,
+        eta_psd_extended,
+        eta_psd_tail,
+        kp,
+        amplitude_gain,
+        candidate_kp,
+        candidate_gain,
+        candidate_fc_safe,
+        tail_level_at_fc,
+        wavenumber,
+    )
 
 
 def contiguous_reliable_upper_frequency(
@@ -882,29 +1112,29 @@ for analysis_block_number, block in enumerate(analysis_blocks):
                 pressure_frozen_fraction,
             "ig_variance_m2":
                 np.nan,
-            "ss_variance_m2":
+            "ss_direct_variance_m2":
                 np.nan,
-            "ss_common_fc_variance_m2":
+            "ss_tail_variance_m2":
+                np.nan,
+            "ss_total_variance_m2":
                 np.nan,
             "hm0_ig_m":
                 np.nan,
-            "hm0_ss_m":
+            "hm0_ss_direct_m":
                 np.nan,
-            "hm0_ss_common_fc_m":
+            "hm0_ss_total_m":
                 np.nan,
-            "common_ss_high_hz":
-                common_ss_high_hz,
-            "common_fc_reliable":
+            "candidate_fc_hz":
+                candidate_fc_hz,
+            "kp_at_candidate_fc":
+                np.nan,
+            "gain_at_candidate_fc":
+                np.nan,
+            "candidate_fc_safe":
                 False,
-            "ig_to_ss_variance_ratio":
+            "tail_level_at_fc_m2_hz":
                 np.nan,
-            "ig_to_ss_common_fc_variance_ratio":
-                np.nan,
-            "ig_effective_high_hz":
-                np.nan,
-            "ss_effective_high_hz":
-                np.nan,
-            "max_reliable_frequency_hz":
+            "ig_to_ss_total_variance_ratio":
                 np.nan,
         }
 
@@ -1093,58 +1323,31 @@ for analysis_block_number, block in enumerate(analysis_blocks):
     )
 
     # --------------------------------------------------------
-    # Convert pressure PSD to surface-elevation PSD
+    # Fixed-cutoff pressure correction + equilibrium f^-4 tail
     # --------------------------------------------------------
 
     (
         eta_psd,
+        eta_psd_extended,
+        eta_psd_tail,
         kp,
         amplitude_gain,
-        reliable,
+        kp_at_candidate_fc,
+        gain_at_candidate_fc,
+        candidate_fc_safe,
+        tail_level_at_fc_m2_hz,
         wavenumber,
-    ) = pressure_to_surface_spectrum(
+    ) = build_fixed_fc_surface_spectrum(
         frequency=frequency,
-        pressure_head_psd=
-            pressure_head_psd,
-        water_depth_m=
-            mean_water_depth_m,
-        sensor_height_above_bed_m=
-            z_pressure_m,
+        pressure_head_psd=pressure_head_psd,
+        water_depth_m=mean_water_depth_m,
+        sensor_height_above_bed_m=z_pressure_m,
+        candidate_fc_hz=candidate_fc_hz,
+        ss_high_hz=ss_high_hz,
+        maximum_amplitude_gain=max_pressure_amplitude_gain,
+        tail_exponent=tail_exponent,
+        tail_anchor_bins=tail_anchor_bins,
         gravity=gravity_m_s2,
-        maximum_amplitude_gain=
-            max_pressure_amplitude_gain,
-    )
-
-    # --------------------------------------------------------
-    # Determine reliable frequency limits
-    # --------------------------------------------------------
-
-    ig_effective_high_hz = (
-        contiguous_reliable_upper_frequency(
-            frequency,
-            reliable,
-            ig_low_hz,
-            ig_high_hz,
-        )
-    )
-
-    ss_effective_high_hz = (
-        contiguous_reliable_upper_frequency(
-            frequency,
-            reliable,
-            ss_low_hz,
-            ss_high_hz,
-        )
-    )
-
-    reliable_positive = frequency[
-        reliable & (frequency > 0)
-    ]
-
-    max_reliable_frequency_hz = (
-        float(reliable_positive.max())
-        if len(reliable_positive)
-        else np.nan
     )
 
     # --------------------------------------------------------
@@ -1156,58 +1359,60 @@ for analysis_block_number, block in enumerate(analysis_blocks):
             frequency,
             eta_psd,
             ig_low_hz,
-            min(
-                ig_high_hz,
-                ig_effective_high_hz,
-            ),
+            ig_high_hz,
         )
-        if np.isfinite(
-            ig_effective_high_hz
+        if candidate_fc_safe
+        else np.nan
+    )
+
+    # --------------------------------------------------------
+    # Sea-swell variance below the fixed cutoff: directly pressure-derived
+    # --------------------------------------------------------
+
+    ss_direct_variance_m2 = (
+        integrate_spectral_band(
+            frequency,
+            eta_psd,
+            ss_low_hz,
+            candidate_fc_hz,
+        )
+        if candidate_fc_safe
+        else np.nan
+    )
+
+    # --------------------------------------------------------
+    # Sea-swell variance above the fixed cutoff: equilibrium f^-4 tail
+    # --------------------------------------------------------
+
+    ss_tail_variance_m2 = (
+        integrate_spectral_band(
+            frequency,
+            eta_psd_tail,
+            candidate_fc_hz,
+            ss_high_hz,
+        )
+        if (
+            candidate_fc_safe
+            and np.isfinite(tail_level_at_fc_m2_hz)
         )
         else np.nan
     )
 
     # --------------------------------------------------------
-    # Integrate pressure-recoverable SS variance
+    # Total SS variance over the requested 0.05-1 Hz band
     # --------------------------------------------------------
 
-    ss_variance_m2 = (
+    ss_total_variance_m2 = (
         integrate_spectral_band(
             frequency,
-            eta_psd,
+            eta_psd_extended,
             ss_low_hz,
-            min(
-                ss_high_hz,
-                ss_effective_high_hz,
-            ),
+            ss_high_hz,
         )
-        if np.isfinite(
-            ss_effective_high_hz
+        if (
+            candidate_fc_safe
+            and np.isfinite(tail_level_at_fc_m2_hz)
         )
-        else np.nan
-    )
-
-    # --------------------------------------------------------
-    # Common SS cutoff
-    # --------------------------------------------------------
-
-    common_fc_reliable = (
-        np.isfinite(
-            ss_effective_high_hz
-        )
-        and
-        ss_effective_high_hz
-        >= common_ss_high_hz
-    )
-
-    ss_common_fc_variance_m2 = (
-        integrate_spectral_band(
-            frequency,
-            eta_psd,
-            ss_low_hz,
-            common_ss_high_hz,
-        )
-        if common_fc_reliable
         else np.nan
     )
 
@@ -1268,55 +1473,37 @@ for analysis_block_number, block in enumerate(analysis_blocks):
 
     hm0_ig_m = (
         4.0 * np.sqrt(ig_variance_m2)
+        if np.isfinite(ig_variance_m2) and ig_variance_m2 > 0
+        else np.nan
     )
 
-    hm0_ss_m = (
-        4.0 * np.sqrt(ss_variance_m2)
+    hm0_ss_direct_m = (
+        4.0 * np.sqrt(ss_direct_variance_m2)
         if (
-            np.isfinite(ss_variance_m2)
-            and ss_variance_m2 > 0
+            np.isfinite(ss_direct_variance_m2)
+            and ss_direct_variance_m2 > 0
         )
         else np.nan
     )
 
-    hm0_ss_common_fc_m = (
-        4.0
-        * np.sqrt(
-            ss_common_fc_variance_m2
-        )
+    hm0_ss_total_m = (
+        4.0 * np.sqrt(ss_total_variance_m2)
         if (
-            np.isfinite(
-                ss_common_fc_variance_m2
-            )
-            and
-            ss_common_fc_variance_m2 > 0
+            np.isfinite(ss_total_variance_m2)
+            and ss_total_variance_m2 > 0
         )
         else np.nan
     )
 
     # --------------------------------------------------------
-    # Variance ratios
+    # Variance ratio using the full SS estimate
     # --------------------------------------------------------
 
-    ig_to_ss_variance_ratio = (
-        ig_variance_m2
-        / ss_variance_m2
+    ig_to_ss_total_variance_ratio = (
+        ig_variance_m2 / ss_total_variance_m2
         if (
-            np.isfinite(ss_variance_m2)
-            and ss_variance_m2 > 0
-        )
-        else np.nan
-    )
-
-    ig_to_ss_common_fc_variance_ratio = (
-        ig_variance_m2
-        / ss_common_fc_variance_m2
-        if (
-            np.isfinite(
-                ss_common_fc_variance_m2
-            )
-            and
-            ss_common_fc_variance_m2 > 0
+            np.isfinite(ss_total_variance_m2)
+            and ss_total_variance_m2 > 0
         )
         else np.nan
     )
@@ -1342,30 +1529,30 @@ for analysis_block_number, block in enumerate(analysis_blocks):
                 pressure_frozen_fraction,
             "ig_variance_m2":
                 ig_variance_m2,
-            "ss_variance_m2":
-                ss_variance_m2,
-            "ss_common_fc_variance_m2":
-                ss_common_fc_variance_m2,
+            "ss_direct_variance_m2":
+                ss_direct_variance_m2,
+            "ss_tail_variance_m2":
+                ss_tail_variance_m2,
+            "ss_total_variance_m2":
+                ss_total_variance_m2,
             "hm0_ig_m":
                 hm0_ig_m,
-            "hm0_ss_m":
-                hm0_ss_m,
-            "hm0_ss_common_fc_m":
-                hm0_ss_common_fc_m,
-            "common_ss_high_hz":
-                common_ss_high_hz,
-            "common_fc_reliable":
-                common_fc_reliable,
-            "ig_to_ss_variance_ratio":
-                ig_to_ss_variance_ratio,
-            "ig_to_ss_common_fc_variance_ratio":
-                ig_to_ss_common_fc_variance_ratio,
-            "ig_effective_high_hz":
-                ig_effective_high_hz,
-            "ss_effective_high_hz":
-                ss_effective_high_hz,
-            "max_reliable_frequency_hz":
-                max_reliable_frequency_hz,
+            "hm0_ss_direct_m":
+                hm0_ss_direct_m,
+            "hm0_ss_total_m":
+                hm0_ss_total_m,
+            "candidate_fc_hz":
+                candidate_fc_hz,
+            "kp_at_candidate_fc":
+                kp_at_candidate_fc,
+            "gain_at_candidate_fc":
+                gain_at_candidate_fc,
+            "candidate_fc_safe":
+                candidate_fc_safe,
+            "tail_level_at_fc_m2_hz":
+                tail_level_at_fc_m2_hz,
+            "ig_to_ss_total_variance_ratio":
+                ig_to_ss_total_variance_ratio,
         }
     )
 
@@ -1394,12 +1581,24 @@ for analysis_block_number, block in enumerate(analysis_blocks):
                     pressure_head_psd,
                 "eta_psd_m2_hz":
                     eta_psd,
+                "eta_psd_tail_m2_hz":
+                    eta_psd_tail,
+                "eta_psd_extended_m2_hz":
+                    eta_psd_extended,
                 "pressure_response_factor":
                     kp,
                 "pressure_amplitude_gain":
                     amplitude_gain,
-                "pressure_correction_reliable":
-                    reliable,
+                "candidate_fc_hz":
+                    candidate_fc_hz,
+                "kp_at_candidate_fc":
+                    kp_at_candidate_fc,
+                "gain_at_candidate_fc":
+                    gain_at_candidate_fc,
+                "candidate_fc_safe":
+                    candidate_fc_safe,
+                "tail_level_at_fc_m2_hz":
+                    tail_level_at_fc_m2_hz,
                 "wavenumber_rad_m":
                     wavenumber,
             }
@@ -1460,12 +1659,17 @@ comparison_columns = [
     "ig_low_hz",
     "ig_high_hz",
     "ss_low_hz",
-    "common_ss_high_hz",
-    "ss_effective_high_hz",
-    "common_fc_reliable",
+    "ss_high_hz",
+    "candidate_fc_hz",
+    "kp_at_candidate_fc",
+    "gain_at_candidate_fc",
+    "candidate_fc_safe",
     "hm0_ig_m",
-    "hm0_ss_common_fc_m",
-    "hm0_ss_m",
+    "hm0_ss_direct_m",
+    "hm0_ss_total_m",
+    "ss_direct_variance_m2",
+    "ss_tail_variance_m2",
+    "ss_total_variance_m2",
 ]
 
 comparison = statistics.loc[statistics["accepted"]].copy()
@@ -1478,6 +1682,7 @@ comparison["case_label"] = case_label
 comparison["ig_low_hz"] = ig_low_hz
 comparison["ig_high_hz"] = ig_high_hz
 comparison["ss_low_hz"] = ss_low_hz
+comparison["ss_high_hz"] = ss_high_hz
 comparison = comparison[comparison_columns]
 
 if common_wave_heights_file.exists():
@@ -1610,17 +1815,18 @@ pressure_save_columns = [
     "pressure_std_pa",
     "pressure_frozen_fraction",
     "ig_variance_m2",
-    "ss_variance_m2",
-    "ss_common_fc_variance_m2",
+    "ss_direct_variance_m2",
+    "ss_tail_variance_m2",
+    "ss_total_variance_m2",
     "hm0_ig_m",
-    "hm0_ss_m",
-    "hm0_ss_common_fc_m",
-    "ig_to_ss_variance_ratio",
-    "ig_to_ss_common_fc_variance_ratio",
-    "ig_effective_high_hz",
-    "ss_effective_high_hz",
-    "common_fc_reliable",
-    "max_reliable_frequency_hz",
+    "hm0_ss_direct_m",
+    "hm0_ss_total_m",
+    "candidate_fc_hz",
+    "kp_at_candidate_fc",
+    "gain_at_candidate_fc",
+    "candidate_fc_safe",
+    "tail_level_at_fc_m2_hz",
+    "ig_to_ss_total_variance_ratio",
 ]
 
 pressure_save = accepted[pressure_save_columns].copy()
@@ -1636,7 +1842,9 @@ pressure_save["ig_low_hz"] = ig_low_hz
 pressure_save["ig_high_hz"] = ig_high_hz
 pressure_save["ss_low_hz"] = ss_low_hz
 pressure_save["ss_high_hz"] = ss_high_hz
-pressure_save["common_ss_high_hz"] = common_ss_high_hz
+pressure_save["candidate_fc_hz"] = candidate_fc_hz
+pressure_save["tail_exponent"] = tail_exponent
+pressure_save["tail_anchor_bins"] = tail_anchor_bins
 pressure_save["detrend_order"] = detrend_order
 pressure_save["welch_segment_seconds"] = welch_segment_seconds
 pressure_save["overlap_fraction"] = overlap_fraction
@@ -1679,13 +1887,16 @@ print(
     accepted[
         [
             "mean_water_depth_m",
+            "kp_at_candidate_fc",
+            "gain_at_candidate_fc",
+            "candidate_fc_safe",
             "hm0_ig_m",
-            "hm0_ss_m",
-            "hm0_ss_common_fc_m",
-            "ig_to_ss_variance_ratio",
-            "ig_to_ss_common_fc_variance_ratio",
-            "ig_effective_high_hz",
-            "ss_effective_high_hz",
+            "hm0_ss_direct_m",
+            "hm0_ss_total_m",
+            "ss_direct_variance_m2",
+            "ss_tail_variance_m2",
+            "ss_total_variance_m2",
+            "ig_to_ss_total_variance_ratio",
         ]
     ].describe(
         percentiles=[0.05, 0.25, 0.5, 0.75, 0.95]
@@ -1693,30 +1904,42 @@ print(
 )
 
 print(
-    f"\nHm0_SS_common_fc uses the fixed comparison band "
-    f"{ss_low_hz:.3f}-{common_ss_high_hz:.3f} Hz. Values are NaN "
-    "when the automatically detected gain-limited cutoff does not reach "
-    "the full common band."
+    f"\nFixed pressure cutoff: {candidate_fc_hz:.3f} Hz"
 )
-
 print(
-    "\nHm0_SS must be interpreted together with "
-    "ss_effective_high_hz. When this cutoff is below 1 Hz, "
-    "Hm0_SS is the pressure-recoverable part of the requested "
-    "0.05-1.00 Hz band, not the complete sea-swell wave height."
+    "Candidate cutoff safe bursts:",
+    int(accepted["candidate_fc_safe"].sum()),
+    "/",
+    len(accepted),
+)
+print(
+    "Maximum gain at candidate fc:",
+    accepted["gain_at_candidate_fc"].max(),
+)
+print(
+    f"Hm0_SS_direct uses {ss_low_hz:.3f}-{candidate_fc_hz:.3f} Hz "
+    "from directly pressure-reconstructed surface elevation."
+)
+print(
+    f"Hm0_SS_total adds an equilibrium f^(-{tail_exponent:g}) tail from "
+    f"{candidate_fc_hz:.3f} to {ss_high_hz:.3f} Hz."
 )
 
 dt = accepted["mid_time"].diff().dt.total_seconds()
 
 accepted["hm0_ig_plot"] = accepted["hm0_ig_m"]
-accepted["hm0_ss_plot"] = accepted["hm0_ss_m"]
-accepted["hm0_ss_common_fc_plot"] = accepted["hm0_ss_common_fc_m"]
+accepted["hm0_ss_direct_plot"] = accepted["hm0_ss_direct_m"]
+accepted["hm0_ss_total_plot"] = accepted["hm0_ss_total_m"]
 
 large_gap = dt > 3600
 
 accepted.loc[
     large_gap,
-    ["hm0_ig_plot", "hm0_ss_plot", "hm0_ss_common_fc_plot"],
+    [
+        "hm0_ig_plot",
+        "hm0_ss_direct_plot",
+        "hm0_ss_total_plot",
+    ],
 ] = np.nan
 
 plt.figure(figsize=(12, 5))
@@ -1729,14 +1952,14 @@ plt.plot(
 
 plt.plot(
     accepted["mid_time"],
-    accepted["hm0_ss_plot"],
-    label=r"$H_{m0,SS}$ (automatic cutoff)",
+    accepted["hm0_ss_direct_plot"],
+    label=rf"$H_{{m0,SS}}$ direct (< {candidate_fc_hz:.3f} Hz)",
 )
 
 plt.plot(
     accepted["mid_time"],
-    accepted["hm0_ss_common_fc_plot"],
-    label=rf"$H_{{m0,SS}}$ (common $f_c$={common_ss_high_hz:.3f} Hz)",
+    accepted["hm0_ss_total_plot"],
+    label=rf"$H_{{m0,SS}}$ direct + $f^{{-{tail_exponent:g}}}$ tail",
 )
 
 plt.xlabel("Time")
@@ -1745,7 +1968,6 @@ plt.title(case_label)
 plt.legend()
 plt.tight_layout()
 plt.show()
-
 
 
 # ============================================================
@@ -1769,17 +1991,31 @@ if not energetic_candidates.empty and not spectra.empty:
         spectra["analysis_block_number"] == block_number
     ].copy()
 
-    plot_data = selected.loc[
+    direct_data = selected.loc[
         (selected["frequency_hz"] > 0)
         & selected["eta_psd_m2_hz"].notna()
     ]
 
+    tail_data = selected.loc[
+        (selected["frequency_hz"] > 0)
+        & selected["eta_psd_tail_m2_hz"].notna()
+    ]
+
     plt.figure(figsize=(9, 6))
 
+    # Direct pressure-derived spectrum
     plt.loglog(
-        plot_data["frequency_hz"],
-        plot_data["eta_psd_m2_hz"],
-        label="Surface elevation",
+        direct_data["frequency_hz"],
+        direct_data["eta_psd_m2_hz"],
+        label="Pressure-derived surface elevation",
+    )
+
+    # Equilibrium tail
+    plt.loglog(
+        tail_data["frequency_hz"],
+        tail_data["eta_psd_tail_m2_hz"],
+        linestyle="--",
+        label=rf"$f^{{-{tail_exponent:g}}}$ tail",
     )
 
     plt.axvspan(
@@ -1793,25 +2029,15 @@ if not energetic_candidates.empty and not spectra.empty:
         ss_low_hz,
         ss_high_hz,
         alpha=0.10,
-        label="Requested sea-swell band",
+        label="Sea-swell band",
     )
 
-    cutoff = most_energetic_row[
-        "ss_effective_high_hz"
-    ]
-
-    # plt.axvline(
-    #     common_ss_high_hz,
-    #     linestyle=":",
-    #     label=f"Common cutoff ({common_ss_high_hz:.3f} Hz)",
-    # )
-
-    if np.isfinite(cutoff):
-        plt.axvline(
-            cutoff,
-            linestyle="--",
-            label=f"Reliable cutoff ({cutoff:.3f} Hz)",
-        )
+    # Fixed cutoff frequency
+    plt.axvline(
+        candidate_fc_hz,
+        linestyle="--",
+        label=rf"$f_c$ = {candidate_fc_hz:.3f} Hz",
+    )
 
     plt.xlabel("Frequency (Hz)")
     plt.ylabel(r"Surface-elevation PSD (m$^2$/Hz)")
@@ -1838,40 +2064,74 @@ if not spectra.empty:
             as_index=False,
         )
         .agg(
-            eta_psd_median=(
+            eta_direct_median=(
                 "eta_psd_m2_hz",
                 "median",
             ),
-            eta_psd_q25=(
+            eta_direct_q25=(
                 "eta_psd_m2_hz",
                 lambda x: x.quantile(0.25),
             ),
-            eta_psd_q75=(
+            eta_direct_q75=(
                 "eta_psd_m2_hz",
+                lambda x: x.quantile(0.75),
+            ),
+            eta_tail_median=(
+                "eta_psd_tail_m2_hz",
+                "median",
+            ),
+            eta_tail_q25=(
+                "eta_psd_tail_m2_hz",
+                lambda x: x.quantile(0.25),
+            ),
+            eta_tail_q75=(
+                "eta_psd_tail_m2_hz",
                 lambda x: x.quantile(0.75),
             ),
         )
     )
 
-    plot_data = median_spectrum.loc[
+    direct_data = median_spectrum.loc[
         (median_spectrum["frequency_hz"] > 0)
-        & median_spectrum["eta_psd_median"].notna()
+        & median_spectrum["eta_direct_median"].notna()
+    ]
+
+    tail_data = median_spectrum.loc[
+        (median_spectrum["frequency_hz"] > 0)
+        & median_spectrum["eta_tail_median"].notna()
     ]
 
     plt.figure(figsize=(9, 6))
 
+    # Median direct spectrum
     plt.loglog(
-        plot_data["frequency_hz"],
-        plot_data["eta_psd_median"],
-        label="Median",
+        direct_data["frequency_hz"],
+        direct_data["eta_direct_median"],
+        label="Median pressure-derived spectrum",
     )
 
     plt.fill_between(
-        plot_data["frequency_hz"],
-        plot_data["eta_psd_q25"],
-        plot_data["eta_psd_q75"],
+        direct_data["frequency_hz"],
+        direct_data["eta_direct_q25"],
+        direct_data["eta_direct_q75"],
         alpha=0.2,
-        label="Interquartile range",
+        label="Direct-spectrum IQR",
+    )
+
+    # Median equilibrium tail
+    plt.loglog(
+        tail_data["frequency_hz"],
+        tail_data["eta_tail_median"],
+        linestyle="--",
+        label=rf"Median $f^{{-{tail_exponent:g}}}$ tail",
+    )
+
+    plt.fill_between(
+        tail_data["frequency_hz"],
+        tail_data["eta_tail_q25"],
+        tail_data["eta_tail_q75"],
+        alpha=0.15,
+        label="Tail IQR",
     )
 
     plt.axvspan(
@@ -1885,15 +2145,23 @@ if not spectra.empty:
         ss_low_hz,
         ss_high_hz,
         alpha=0.10,
-        label="Requested sea-swell band",
+        label="Sea-swell band",
+    )
+
+    plt.axvline(
+        candidate_fc_hz,
+        linestyle="--",
+        label=rf"$f_c$ = {candidate_fc_hz:.3f} Hz",
     )
 
     plt.xlabel("Frequency (Hz)")
     plt.ylabel(r"Surface-elevation PSD (m$^2$/Hz)")
     plt.ylim(1e-4, 2e-1)
+
     plt.title(
         f"Median surface-elevation spectrum ({case_label})"
     )
+
     plt.legend()
     plt.tight_layout()
     plt.show()
@@ -1910,28 +2178,50 @@ if not spectra.empty:
             as_index=False,
         )
         .agg(
-            eta_psd_mean=(
+            eta_direct_mean=(
                 "eta_psd_m2_hz",
                 "mean",
             ),
-            eta_psd_std=(
+            eta_direct_std=(
                 "eta_psd_m2_hz",
+                "std",
+            ),
+            eta_tail_mean=(
+                "eta_psd_tail_m2_hz",
+                "mean",
+            ),
+            eta_tail_std=(
+                "eta_psd_tail_m2_hz",
                 "std",
             ),
         )
     )
 
-    plot_data = mean_spectrum.loc[
+    direct_data = mean_spectrum.loc[
         (mean_spectrum["frequency_hz"] > 0)
-        & mean_spectrum["eta_psd_mean"].notna()
+        & mean_spectrum["eta_direct_mean"].notna()
+    ]
+
+    tail_data = mean_spectrum.loc[
+        (mean_spectrum["frequency_hz"] > 0)
+        & mean_spectrum["eta_tail_mean"].notna()
     ]
 
     plt.figure(figsize=(9, 6))
 
+    # Mean direct spectrum
     plt.loglog(
-        plot_data["frequency_hz"],
-        plot_data["eta_psd_mean"],
-        label="Mean",
+        direct_data["frequency_hz"],
+        direct_data["eta_direct_mean"],
+        label="Mean pressure-derived spectrum",
+    )
+
+    # Mean equilibrium tail
+    plt.loglog(
+        tail_data["frequency_hz"],
+        tail_data["eta_tail_mean"],
+        linestyle="--",
+        label=rf"Mean $f^{{-{tail_exponent:g}}}$ tail",
     )
 
     plt.axvspan(
@@ -1945,16 +2235,154 @@ if not spectra.empty:
         ss_low_hz,
         ss_high_hz,
         alpha=0.10,
-        label="Requested sea-swell band",
+        label="Sea-swell band",
     )
-    
+
+    plt.axvline(
+        candidate_fc_hz,
+        linestyle="--",
+        label=rf"$f_c$ = {candidate_fc_hz:.3f} Hz",
+    )
 
     plt.xlabel("Frequency (Hz)")
     plt.ylabel(r"Surface-elevation PSD (m$^2$/Hz)")
     plt.ylim(2e-4, 2e-1)
+
     plt.title(
         f"Mean surface-elevation spectrum ({case_label})"
     )
+
     plt.legend()
     plt.tight_layout()
     plt.show()
+    
+# ============================================================
+# TIME-FREQUENCY HEATMAP OF SURFACE-ELEVATION SPECTRUM
+# ============================================================
+
+if not spectra.empty:
+
+    heatmap = spectra.copy()
+
+    heatmap["mid_time"] = (
+        pd.to_datetime(heatmap["start_time"])
+        + (
+            pd.to_datetime(heatmap["end_time"])
+            - pd.to_datetime(heatmap["start_time"])
+        ) / 2
+    )
+
+    fmin_plot = 0.005
+    fmax_plot = ss_high_hz
+
+    heatmap = heatmap.loc[
+        (heatmap["frequency_hz"] >= fmin_plot)
+        & (heatmap["frequency_hz"] <= fmax_plot)
+        & heatmap["eta_psd_extended_m2_hz"].notna()
+    ].copy()
+
+    if not heatmap.empty:
+
+        # ----------------------------------------------------
+        # Frequency x time matrix
+        # ----------------------------------------------------
+
+        # ----------------------------------------------------
+        # Put spectra on a regular 30-minute time grid.
+        # Missing bursts remain NaN.
+        # ----------------------------------------------------
+        
+        spectrum_matrix = heatmap.pivot_table(
+            index="frequency_hz",
+            columns="mid_time",
+            values="eta_psd_extended_m2_hz",
+            aggfunc="mean",
+        )
+        
+        spectrum_matrix = spectrum_matrix.sort_index(axis=1)
+        
+        # Actual frequency grid
+        frequency = spectrum_matrix.index.to_numpy(dtype=float)
+        
+        # Round actual burst times to nominal 30-min grid
+        actual_time = pd.DatetimeIndex(
+            spectrum_matrix.columns
+        ).round("30min")
+        
+        spectrum_matrix.columns = actual_time
+        
+        # Complete deployment time grid
+        time_grid = pd.date_range(
+            start=actual_time.min(),
+            end=actual_time.max(),
+            freq="30min",
+        )
+        
+        # Insert all missing 30-min periods as NaN
+        spectrum_matrix = spectrum_matrix.reindex(
+            columns=time_grid
+        )
+        
+        S_plot = spectrum_matrix.to_numpy(dtype=float)
+        
+        # ----------------------------------------------------
+        # Log10 PSD
+        # ----------------------------------------------------
+        
+        log_S_eta = np.full_like(
+            S_plot,
+            np.nan,
+            dtype=float,
+        )
+        
+        valid = np.isfinite(S_plot) & (S_plot > 0)
+        
+        log_S_eta[valid] = np.log10(
+            S_plot[valid]
+        )
+        
+        # ----------------------------------------------------
+        # Plot
+        # ----------------------------------------------------
+        
+        fig, ax = plt.subplots(figsize=(14, 6))
+        
+        mesh = ax.pcolormesh(
+            time_grid,
+            frequency,
+            np.ma.masked_invalid(log_S_eta),
+            shading="auto",
+        )
+        
+        cbar = fig.colorbar(mesh, ax=ax)
+        
+        cbar.set_label(
+            r"$\log_{10} S_{\eta\eta}$ (m$^2$/Hz)"
+        )
+        
+        ax.axhline(
+            ig_high_hz,
+            linestyle="--",
+            linewidth=1.2,
+            label=(
+                f"Current IG/SS boundary "
+                f"({ig_high_hz:.3f} Hz)"
+            ),
+        )
+        
+        ax.set_yscale("log")
+        ax.set_ylim(fmin_plot, fmax_plot)
+        
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Frequency (Hz)")
+        
+        ax.set_title(
+            f"{case_label}: time-frequency evolution "
+            "of surface-elevation spectrum"
+        )
+        
+        ax.legend()
+        
+        fig.autofmt_xdate()
+        plt.tight_layout()
+        plt.show()
