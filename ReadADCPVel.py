@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Read KG2 ADCP-HR NetCDF data, rotate East/North velocity in all cells
+Read KG2 ADCP-HR or ADCP NetCDF data, select a user-defined subset of
+velocity cells by height, rotate East/North velocity only for those cells
 into cross-shore and alongshore components, and save to Parquet.
 
 The ADCP-HR velocity variables have dimensions:
@@ -14,7 +15,6 @@ Important:
 """
 
 from pathlib import Path
-
 import h5py
 import numpy as np
 import pandas as pd
@@ -25,11 +25,11 @@ import pandas as pd
 # ============================================================
 
 file_path = Path(
-    r"C:\dev\Python\LongWaveAnalysis\ADCP-HR"
-    r"\adcp_hr_dvn_201804_F3P2.nc"
+    r"C:\dev\Python\LongWaveAnalysis\ADCP"
+    r"\UP\new\adcp_dvn_201804_f3p3_000.nc"
 )
 
-case_id = "DVN_F3_ADCP_HR"
+case_id = "DVN_F3_ADCP_UP"
 
 output_folder = Path(
     r"C:\dev\Python\LongWaveAnalysis\Processed"
@@ -44,15 +44,20 @@ output_file = (
     / f"{case_id}_rotated.parquet"
 )
 
-cell_metadata_file = (
+pressure_output_file = (
     output_folder
-    / f"{case_id}_cell_metadata.csv"
+    / f"Pressure_{case_id}.parquet"
 )
 
-failure_file = (
-    output_folder
-    / f"{case_id}_read_failures.csv"
-)
+# cell_metadata_file = (
+#     output_folder
+#     / f"{case_id}_cell_metadata.csv"
+# )
+
+# failure_file = (
+#     output_folder
+#     / f"{case_id}_read_failures.csv"
+# )
 
 # Positive cross-shore direction: nearshore -> offshore.
 nearshore_point = (52.23317, 4.3873215)  # DVN F3
@@ -74,6 +79,23 @@ target_time_stop = pd.Timestamp(
 
 # Number of time samples requested in one read operation.
 block_samples = 100_000
+
+# ------------------------------------------------------------
+# Cell selection
+# ------------------------------------------------------------
+# Save only N_cell cells distributed as evenly as possible in height.
+# The code first keeps source cells inside [cell_height_min_m,
+# cell_height_max_m], then selects the cells nearest to N_cell equally
+# spaced target heights across that interval.
+#
+# Examples:
+#   ADCP:    cell_height_min_m = 3.0, cell_height_max_m = 18.0
+#   ADCP-HR: choose a range appropriate for its Z_bin values.
+#
+# Set N_cell=None to keep every available cell inside the height range.
+cell_height_min_m = 3.0
+cell_height_max_m = 12.0
+N_cell = 8
 
 # Save original ENU components as well as rotated components.
 keep_east_north = False
@@ -419,6 +441,247 @@ def read_time_instrument_cells_chunked(
     return output, failures
 
 
+
+
+def select_cells_by_height(
+    heights_m,
+    minimum_height_m,
+    maximum_height_m,
+    number_to_select,
+):
+    """
+    Select source-cell indices approximately equally spaced in height.
+
+    Only cells within [minimum_height_m, maximum_height_m] are eligible.
+    If number_to_select is None, all eligible cells are returned.
+
+    For finite N, target heights are equally spaced across the requested
+    range and the nearest still-unused source cell is selected for each
+    target. Returned indices are sorted by physical height.
+    """
+    heights_m = np.asarray(heights_m, dtype=float).reshape(-1)
+
+    if minimum_height_m > maximum_height_m:
+        raise ValueError(
+            "cell_height_min_m must be <= cell_height_max_m."
+        )
+
+    eligible = np.flatnonzero(
+        np.isfinite(heights_m)
+        & (heights_m >= minimum_height_m)
+        & (heights_m <= maximum_height_m)
+    )
+
+    if eligible.size == 0:
+        raise ValueError(
+            "No velocity cells fall inside the requested height range "
+            f"[{minimum_height_m}, {maximum_height_m}] m. "
+            f"Available finite range is "
+            f"[{np.nanmin(heights_m):.3f}, {np.nanmax(heights_m):.3f}] m."
+        )
+
+    # Sort eligible cells by height.
+    eligible = eligible[
+        np.argsort(heights_m[eligible])
+    ]
+
+    if number_to_select is None:
+        return eligible
+
+    number_to_select = int(number_to_select)
+
+    if number_to_select < 1:
+        raise ValueError("N_cell must be >= 1 or None.")
+
+    if number_to_select >= eligible.size:
+        return eligible
+
+    target_heights = np.linspace(
+        minimum_height_m,
+        maximum_height_m,
+        number_to_select,
+    )
+
+    remaining = list(eligible)
+    selected = []
+
+    for target in target_heights:
+        nearest_position = int(
+            np.argmin(
+                np.abs(
+                    heights_m[np.asarray(remaining)]
+                    - target
+                )
+            )
+        )
+        selected.append(
+            remaining.pop(nearest_position)
+        )
+
+    selected = np.asarray(selected, dtype=int)
+
+    return selected[
+        np.argsort(heights_m[selected])
+    ]
+
+
+def read_velocity_cells_chunked(
+    dataset,
+    start,
+    stop,
+    instrument_index,
+    variable_name,
+    block_samples,
+    cell_indices=None,
+):
+    """
+    Read selected velocity cells from either:
+        (time, instrument, cell), or
+        (time, cell).
+
+    Only the requested source-cell indices are read from disk.
+    Returned shape is (time, number_of_selected_cells).
+    """
+    if dataset.ndim == 3:
+        source_number_of_cells = dataset.shape[2]
+    elif dataset.ndim == 2:
+        source_number_of_cells = dataset.shape[1]
+    else:
+        raise ValueError(
+            f"{variable_name} must be (time, instrument, cell) "
+            f"or (time, cell); found {dataset.shape}."
+        )
+
+    if cell_indices is None:
+        cell_indices = np.arange(
+            source_number_of_cells,
+            dtype=int,
+        )
+    else:
+        cell_indices = np.asarray(
+            cell_indices,
+            dtype=int,
+        ).reshape(-1)
+
+    if (
+        cell_indices.size == 0
+        or np.any(cell_indices < 0)
+        or np.any(cell_indices >= source_number_of_cells)
+    ):
+        raise IndexError(
+            f"Invalid selected cell indices for {variable_name}."
+        )
+
+    output = np.full(
+        (stop - start, len(cell_indices)),
+        np.nan,
+        dtype=np.float64,
+    )
+    failures = []
+
+    scale = scalar_attribute(
+        dataset,
+        "scale_factor",
+        1.0,
+    )
+    offset = scalar_attribute(
+        dataset,
+        "add_offset",
+        0.0,
+    )
+    fill_value = dataset_fill_value(dataset)
+
+    for output_cell_index, source_cell_index in enumerate(
+        cell_indices
+    ):
+        for block_start in range(
+            start,
+            stop,
+            block_samples,
+        ):
+            block_stop = min(
+                block_start + block_samples,
+                stop,
+            )
+
+            try:
+                if dataset.ndim == 3:
+                    raw = dataset[
+                        block_start:block_stop,
+                        instrument_index,
+                        source_cell_index,
+                    ].astype(np.float64)
+                else:
+                    raw = dataset[
+                        block_start:block_stop,
+                        source_cell_index,
+                    ].astype(np.float64)
+
+                if fill_value is not None:
+                    raw[raw == fill_value] = np.nan
+
+                output[
+                    block_start - start:
+                    block_stop - start,
+                    output_cell_index,
+                ] = raw * scale + offset
+
+            except (OSError, RuntimeError) as exc:
+                failures.append(
+                    {
+                        "variable": variable_name,
+                        "cell_index": int(source_cell_index),
+                        "cell_number": int(source_cell_index + 1),
+                        "start_index": block_start,
+                        "stop_index": block_stop,
+                        "error": str(exc),
+                    }
+                )
+
+    return output, failures
+
+
+def read_pressure_chunked(
+    dataset, start, stop, instrument_index,
+    variable_name, block_samples,
+):
+    """Read pressure_corrected stored as (time,) or (time, instrument)."""
+    if dataset.ndim == 1:
+        return read_1d_chunked(
+            dataset, start, stop, variable_name, block_samples
+        )
+
+    if dataset.ndim != 2:
+        raise ValueError(
+            f"{variable_name} must be (time,) or (time, instrument); "
+            f"found {dataset.shape}."
+        )
+
+    output = np.full(stop - start, np.nan)
+    failures = []
+    scale = scalar_attribute(dataset, "scale_factor", 1.0)
+    offset = scalar_attribute(dataset, "add_offset", 0.0)
+    fill_value = dataset_fill_value(dataset)
+
+    for b0 in range(start, stop, block_samples):
+        b1 = min(b0 + block_samples, stop)
+        try:
+            raw = dataset[b0:b1, instrument_index].astype(float)
+            if fill_value is not None:
+                raw[raw == fill_value] = np.nan
+            output[b0-start:b1-start] = raw * scale + offset
+        except (OSError, RuntimeError) as exc:
+            failures.append({
+                "variable": variable_name,
+                "cell_index": np.nan,
+                "cell_number": np.nan,
+                "start_index": b0,
+                "stop_index": b1,
+                "error": str(exc),
+            })
+    return output, failures
+
+
 def rotation_information(
     point_from,
     point_to,
@@ -544,38 +807,44 @@ with h5py.File(
     file_path,
     "r",
 ) as f:
-    required_variables = {
-        "time",
-        "cell",
-        "Z_bin",
-        "East",
-        "North",
-    }
-
-    missing_variables = (
-        required_variables
-        - set(f.keys())
-    )
-
-    if missing_variables:
-        raise KeyError(
-            "Missing required variables: "
-            f"{sorted(missing_variables)}"
+    if all(name in f for name in ("Z_bin", "East", "North")):
+        data_type = "ADCP-HR"
+        z_variable = "Z_bin"
+        east_variable = "East"
+        north_variable = "North"
+        pressure_variable = None
+    elif all(
+        name in f
+        for name in ("z_measures", "velocity_east", "velocity_north")
+    ):
+        data_type = "ADCP"
+        z_variable = "z_measures"
+        east_variable = "velocity_east"
+        north_variable = "velocity_north"
+        pressure_variable = (
+            "pressure_corrected"
+            if "pressure_corrected" in f
+            else None
         )
+    else:
+        raise KeyError(
+            "Expected ADCP-HR [Z_bin, East, North] or "
+            "ADCP [z_measures, velocity_east, velocity_north]."
+        )
+
+    if "time" not in f:
+        raise KeyError("Missing required variable: time")
 
     time_ds = f["time"]
-    east_ds = f["East"]
-    north_ds = f["North"]
+    east_ds = f[east_variable]
+    north_ds = f[north_variable]
 
     if east_ds.shape != north_ds.shape:
-        raise ValueError(
-            "East and North have different shapes."
-        )
+        raise ValueError("East and North velocity arrays have different shapes.")
 
-    if east_ds.ndim != 3:
+    if east_ds.ndim not in (2, 3):
         raise ValueError(
-            "East and North must have shape "
-            "(time, instrument, cell)."
+            f"Velocity arrays must be 2-D or 3-D; found {east_ds.shape}."
         )
 
     number_of_samples_total = (
@@ -615,30 +884,79 @@ with h5py.File(
             "Selected time interval contains no samples."
         )
 
-    cell_values = np.asarray(
-        f["cell"][...]
-    ).reshape(-1)
-
-    z_bin_m = np.asarray(
-        f["Z_bin"][...],
-        dtype=np.float64,
-    ).reshape(-1)
-
-    number_of_cells = (
+    source_number_of_cells = (
         east_ds.shape[2]
+        if east_ds.ndim == 3
+        else east_ds.shape[1]
     )
 
-    if len(z_bin_m) != number_of_cells:
+    source_z_m = np.asarray(
+        f[z_variable][...],
+        dtype=np.float64,
+    ).squeeze()
+
+    if source_z_m.ndim == 2:
+        if source_z_m.shape[-1] == source_number_of_cells:
+            source_z_m = source_z_m[
+                min(instrument_index, source_z_m.shape[0] - 1),
+                :,
+            ]
+        elif source_z_m.shape[0] == source_number_of_cells:
+            source_z_m = source_z_m[
+                :,
+                min(instrument_index, source_z_m.shape[1] - 1),
+            ]
+
+    source_z_m = np.asarray(
+        source_z_m,
+        dtype=float,
+    ).reshape(-1)
+
+    if len(source_z_m) != source_number_of_cells:
         raise ValueError(
-            "Z_bin length does not match "
-            "the velocity cell count."
+            f"{z_variable} length does not match velocity cell count."
         )
 
-    if len(cell_values) != number_of_cells:
-        raise ValueError(
-            "cell dimension length does not match "
-            "the velocity cell count."
+    if "cell" in f:
+        source_cell_values = np.asarray(
+            f["cell"][...]
+        ).reshape(-1)
+
+        if len(source_cell_values) != source_number_of_cells:
+            source_cell_values = np.arange(
+                1,
+                source_number_of_cells + 1,
+            )
+    else:
+        source_cell_values = np.arange(
+            1,
+            source_number_of_cells + 1,
         )
+
+    # Select cells BEFORE reading velocity, so unneeded cells are never
+    # loaded, rotated, or written.
+    selected_source_indices = select_cells_by_height(
+        heights_m=source_z_m,
+        minimum_height_m=cell_height_min_m,
+        maximum_height_m=cell_height_max_m,
+        number_to_select=N_cell,
+    )
+
+    z_bin_m = source_z_m[selected_source_indices]
+    cell_values = source_cell_values[selected_source_indices]
+
+    number_of_cells = len(selected_source_indices)
+
+    print(
+        f"\n{data_type}: selected {number_of_cells} of "
+        f"{source_number_of_cells} velocity cells."
+    )
+    print(
+        "Requested height range:",
+        f"{cell_height_min_m:.3f} to {cell_height_max_m:.3f} m",
+    )
+    print("Selected source cell numbers:", selected_source_indices + 1)
+    print("Selected heights (m):", z_bin_m)
 
     instrument_name = (
         decode_single_string(
@@ -660,6 +978,20 @@ with h5py.File(
         else np.nan
     )
 
+    pressure_sensor_depth_m = np.nan
+
+    if pressure_variable is not None:
+        pressure_ds = f[pressure_variable]
+        sensor_depth_value = pressure_ds.attrs.get(
+            "sensor_depth", np.nan
+        )
+        try:
+            pressure_sensor_depth_m = float(
+                np.asarray(sensor_depth_value).squeeze()
+            )
+        except (TypeError, ValueError):
+            pressure_sensor_depth_m = np.nan
+
     epoch_seconds, failures = (
         read_1d_chunked(
             dataset=time_ds,
@@ -675,13 +1007,14 @@ with h5py.File(
     )
 
     east, failures = (
-        read_time_instrument_cells_chunked(
+        read_velocity_cells_chunked(
             dataset=east_ds,
             start=start_index,
             stop=stop_index,
             instrument_index=instrument_index,
-            variable_name="East",
+            variable_name=east_variable,
             block_samples=block_samples,
+            cell_indices=selected_source_indices,
         )
     )
 
@@ -690,13 +1023,14 @@ with h5py.File(
     )
 
     north, failures = (
-        read_time_instrument_cells_chunked(
+        read_velocity_cells_chunked(
             dataset=north_ds,
             start=start_index,
             stop=stop_index,
             instrument_index=instrument_index,
-            variable_name="North",
+            variable_name=north_variable,
             block_samples=block_samples,
+            cell_indices=selected_source_indices,
         )
     )
 
@@ -704,28 +1038,48 @@ with h5py.File(
         failures
     )
 
+    pressure_corrected = None
+
+    if pressure_variable is not None:
+        pressure_corrected, failures = read_pressure_chunked(
+            dataset=f[pressure_variable],
+            start=start_index,
+            stop=stop_index,
+            instrument_index=instrument_index,
+            variable_name=pressure_variable,
+            block_samples=block_samples,
+        )
+        all_failures.extend(failures)
+
     up = None
 
     if include_up:
-        if "Up" not in f:
+        up_variable = (
+            "Up"
+            if "Up" in f
+            else (
+                "velocity_up"
+                if "velocity_up" in f
+                else None
+            )
+        )
+
+        if up_variable is None:
             raise KeyError(
-                "include_up=True, but Up is missing."
+                "include_up=True, but neither Up nor velocity_up exists."
             )
 
-        up, failures = (
-            read_time_instrument_cells_chunked(
-                dataset=f["Up"],
-                start=start_index,
-                stop=stop_index,
-                instrument_index=instrument_index,
-                variable_name="Up",
-                block_samples=block_samples,
-            )
+        up, failures = read_velocity_cells_chunked(
+            dataset=f[up_variable],
+            start=start_index,
+            stop=stop_index,
+            instrument_index=instrument_index,
+            variable_name=up_variable,
+            block_samples=block_samples,
+            cell_indices=selected_source_indices,
         )
 
-        all_failures.extend(
-            failures
-        )
+        all_failures.extend(failures)
 
 
 # ============================================================
@@ -769,7 +1123,7 @@ print(
 print("\nCell identifiers:")
 print(cell_values)
 
-print("\nZ_bin relative to frame bottom (m):")
+print(f"\nVertical coordinate {z_variable} (m):")
 print(z_bin_m)
 
 print("\nRotation information:")
@@ -805,7 +1159,7 @@ for cell_index in range(
 
     print(
         f"Cell {cell_index + 1:02d}, "
-        f"Z_bin={z_bin_m[cell_index]:.3f} m: "
+        f"{z_variable}={z_bin_m[cell_index]:.3f} m: "
         f"East={east_valid:.6f}, "
         f"North={north_valid:.6f}, "
         f"paired={paired_valid:.6f}"
@@ -830,8 +1184,8 @@ result = pd.DataFrame(
 for cell_index in range(
     number_of_cells
 ):
-    cell_number = (
-        cell_index + 1
+    cell_number = int(
+        selected_source_indices[cell_index] + 1
     )
 
     cell_id = int(
@@ -925,7 +1279,7 @@ if result.empty:
         "No rows remain after reading time."
     )
 
-print("\nExtracted ADCP-HR data")
+print(f"\nExtracted {data_type} data")
 print("Start:", result["time"].iloc[0])
 print("End:  ", result["time"].iloc[-1])
 print("Rows: ", len(result))
@@ -951,14 +1305,19 @@ cell_metadata = pd.DataFrame(
         "instrument_height_in_frame_m":
             instrument_height_in_frame_m,
         "cell_number":
-            np.arange(
-                1,
-                number_of_cells + 1,
-            ),
+            selected_source_indices + 1,
         "cell_id_from_file":
             cell_values.astype(int),
         "z_bin_relative_to_frame_bottom_m":
             z_bin_m,
+        "source_cell_index":
+            selected_source_indices,
+        "requested_height_min_m":
+            cell_height_min_m,
+        "requested_height_max_m":
+            cell_height_max_m,
+        "requested_N_cell":
+            N_cell,
     }
 )
 
@@ -975,21 +1334,45 @@ result.to_parquet(
     index=False,
 )
 
-cell_metadata.to_csv(
-    cell_metadata_file,
-    index=False,
-)
+if pressure_corrected is not None:
+    pressure_result = pd.DataFrame(
+        {
+            "time": pd.to_datetime(
+                epoch_seconds,
+                unit="s",
+                utc=True,
+                errors="coerce",
+            ),
+            "pressure_corrected": pressure_corrected,
+            "sensor_depth": pressure_sensor_depth_m,
+        }
+    )
 
-if all_failures:
-    pd.DataFrame(
-        all_failures
-    ).to_csv(
-        failure_file,
+    pressure_result = (
+        pressure_result.dropna(subset=["time"])
+        .reset_index(drop=True)
+    )
+
+    pressure_result.to_parquet(
+        pressure_output_file,
         index=False,
     )
 
-    print("\nRead failures saved to:")
-    print(failure_file)
+# cell_metadata.to_csv(
+#     cell_metadata_file,
+#     index=False,
+# )
+
+if all_failures:
+    # pd.DataFrame(
+    #     all_failures
+    # ).to_csv(
+    #     failure_file,
+    #     index=False,
+    # )
+
+    # print("\nRead failures saved to:")
+    # print(failure_file)
 
     print(
         "Number of failed cell/block reads:",
@@ -1000,8 +1383,11 @@ else:
         "\nNo HDF5 read failures detected."
     )
 
-print("\nSaved rotated ADCP-HR data to:")
+print(f"\nSaved rotated {data_type} data to:")
 print(output_file)
 
-print("\nSaved ADCP-HR cell metadata to:")
-print(cell_metadata_file)
+# print("\nSaved ADCP-HR cell metadata to:")
+# print(cell_metadata_file)
+if pressure_corrected is not None:
+    print("\nSaved ADCP pressure data to:")
+    print(pressure_output_file)
