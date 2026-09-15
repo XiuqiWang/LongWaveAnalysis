@@ -80,7 +80,7 @@ for dataset in [frame1, frame3]:
     
     dataset.loc[
         large_gap,
-        ["hm0_ig_m", "hm0_ss_common_fc_m", "hm0_ss_m", "ig_ss_ratio"],
+        ["hm0_ig_m", "hm0_ss_total_m"],
     ] = np.nan
 
 
@@ -97,18 +97,18 @@ plt.plot(
     label=frame1_label,
 )
 
-# plt.plot(
-#     frame3["mid_time"],
-#     frame3["hm0_ig_m"],
-#     label=frame3_label,
-# )
+plt.plot(
+    frame3["mid_time"],
+    frame3["hm0_ig_m"],
+    label=frame3_label,
+)
 
 plt.xlabel("Time")
 plt.ylabel(r"$H_{m0,IG}$ (m)")
 plt.ylim(bottom=0)
 plt.title("Infragravity wave height versus time")
 plt.grid(True, alpha=0.3)
-# plt.legend()
+plt.legend()
 plt.tight_layout()
 
 
@@ -120,20 +120,20 @@ plt.figure(figsize=(12,5))
 
 plt.plot(
     frame1["mid_time"],
-    frame1["hm0_ss_m"],
+    frame1["hm0_ss_total_m"],
     label=frame1_label,
 )
 
 plt.plot(
     frame3["mid_time"],
-    frame3["hm0_ss_m"],
+    frame3["hm0_ss_total_m"],
     label=frame3_label,
 )
 
 plt.xlabel("Time")
 plt.ylabel(r"$H_{m0,SS}$ (m)")
 plt.ylim(bottom=0)
-plt.title("Sea-swell wave height (cut off at an effective fc) versus time")
+plt.title("Sea-swell wave height versus time")
 plt.grid(True, alpha=0.3)
 plt.legend()
 plt.tight_layout()
@@ -147,20 +147,19 @@ plt.figure(figsize=(12,5))
 
 plt.plot(
     frame1["mid_time"],
-    frame1["ig_ss_ratio"],
+    frame1["hm0_ig_m"]/frame1["hm0_ss_total_m"],
     label=frame1_label,
 )
 
 plt.plot(
     frame3["mid_time"],
-    frame3["ig_ss_ratio"],
+    frame3["hm0_ig_m"]/frame3["hm0_ss_total_m"],
     label=frame3_label,
 )
 
 plt.xlabel("Time")
-plt.ylabel(r"$H_{m0,IG}/H_{m0,SS,common-fc}$")
+plt.ylabel(r"$H_{m0,IG}/H_{m0,SS}$")
 plt.ylim(bottom=0)
-plt.title(r"$H_{m0,IG}/H_{m0,SS,common-fc}$ versus time")
 plt.grid(True, alpha=0.3)
 plt.legend()
 plt.tight_layout()
@@ -172,23 +171,23 @@ plt.tight_layout()
 plt.figure(figsize=(8,6))
 
 plt.scatter(
-    frame1["hm0_ss_common_fc_m"],
-    frame1["ig_ss_ratio"],
+    frame1["hm0_ss_total_m"],
+    frame1["hm0_ig_m"]/frame1["hm0_ss_total_m"],
     s=35,
     alpha=0.7,
     label=frame1_label,
 )
 
 plt.scatter(
-    frame3["hm0_ss_common_fc_m"],
-    frame3["ig_ss_ratio"],
+    frame3["hm0_ss_total_m"],
+    frame3["hm0_ig_m"]/frame3["hm0_ss_total_m"],
     s=35,
     alpha=0.7,
     label=frame3_label,
 )
 
-plt.xlabel(r"$H_{m0,SS,\mathrm{common}}$ (m)")
-plt.ylabel(r"$H_{m0,IG}/H_{m0,SS,\mathrm{common}}$")
+plt.xlabel(r"$H_{m0,SS}$ (m)")
+plt.ylabel(r"$H_{m0,IG}/H_{m0,SS}$")
 plt.grid(True, alpha=0.3)
 plt.legend()
 plt.tight_layout()
