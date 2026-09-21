@@ -26,8 +26,8 @@ minimum_velocity_std_m_s = 1e-4
 welch_segment_seconds = 512.0
 overlap_fraction = 0.5
 detrend_order = 2
-ig_low_hz, ig_high_hz = 0.005, 0.05
-ss_low_hz, ss_high_hz = 0.05, 1.0
+ig_low_hz, ig_high_hz = 0.005, 0.04
+ss_low_hz, ss_high_hz = 0.04, 1.0
 plot_gap_seconds = 3600.0
 
 # --------------------------- FUNCTIONS ---------------------------
@@ -427,7 +427,7 @@ if not spectra.empty:
             ax.set_xlabel("Frequency (Hz)")
             ax.set_ylabel(r"PSD ((m/s)$^2$/Hz)")
             ax.set_title(
-                f"Cell {c['cell_number']}: z={c['z_bin_m']:.3f} m"
+                f"z={c['z_bin_m']:.3f} m"
             )
             ax.grid(True, which="both", alpha=0.22)
 

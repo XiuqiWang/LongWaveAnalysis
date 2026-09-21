@@ -39,11 +39,11 @@ from scipy.signal import welch
 
 input_file = Path(
     r"C:\dev\Python\LongWaveAnalysis\Processed"
-    r"\Pressure_DVN_F3_ADCP_UP.parquet"
+    r"\Pressure_DVN_F1_ADCP_UP.parquet"
 )
 
-case_id = "DVN_F3_ADCP_UP"
-case_label = "DVN F3 ADCP UP"
+case_id = "DVN_F1_ADCP_UP"
+case_label = "DVN F1 ADCP UP"
 
 pressure_column = "pressure_corrected"
 
@@ -90,7 +90,7 @@ tail_anchor_bins = 5
 minimum_valid_fraction = 0.98
 minimum_block_fraction = 0.95
 minimum_water_depth_m = 0.25
-expected_water_depth_m = 12.0  # change only when processing another frame
+expected_water_depth_m = 20.0  # change only when processing another frame
 maximum_depth_deviation_m = 3.0
 
 detrend_order = 2
@@ -1595,49 +1595,49 @@ accepted["mid_time"] = (
 
 accepted = accepted.sort_values("mid_time")
 
-# # ============================================================
-# # SAVE ADCP PRESSURE FOR PRESSURE-VELOCITY ANALYSIS
-# # SHARED FILE FOR F1 / F3 ADCP PRESSURE
-# # ============================================================
+# ============================================================
+# SAVE ADCP PRESSURE FOR PRESSURE-VELOCITY ANALYSIS
+# SHARED FILE FOR F1 / F3 ADCP PRESSURE
+# ============================================================
 
-# directional_pressure_file = (
-#     output_folder
-#     / "all_cases_ADCP_directional_pressure.parquet"
-# )
+directional_pressure_file = (
+    output_folder
+    / "all_cases_ADCP_UP_directional_pressure.parquet"
+)
 
-# if directional_pressure.empty:
-#     print(
-#         "\nNo accepted ADV pressure time series "
-#         "available for directional analysis."
-#     )
-# else:
-#     if directional_pressure_file.exists():
-#         old = pd.read_parquet(directional_pressure_file)
-#         if "case_id" not in old.columns:
-#             raise KeyError(
-#                 "Existing ADV directional-pressure file "
-#                 "does not contain case_id."
-#             )
-#         old = old.loc[old["case_id"] != case_id]
-#         directional_pressure = pd.concat(
-#             [old, directional_pressure],
-#             ignore_index=True,
-#         )
+if directional_pressure.empty:
+    print(
+        "\nNo accepted ADV pressure time series "
+        "available for directional analysis."
+    )
+else:
+    if directional_pressure_file.exists():
+        old = pd.read_parquet(directional_pressure_file)
+        if "case_id" not in old.columns:
+            raise KeyError(
+                "Existing ADV directional-pressure file "
+                "does not contain case_id."
+            )
+        old = old.loc[old["case_id"] != case_id]
+        directional_pressure = pd.concat(
+            [old, directional_pressure],
+            ignore_index=True,
+        )
 
-#     directional_pressure = (
-#         directional_pressure
-#         .sort_values(["case_id", "time", "analysis_block_number"])
-#         .reset_index(drop=True)
-#     )
-#     directional_pressure.to_parquet(
-#         directional_pressure_file,
-#         index=False,
-#     )
-#     print(
-#         "\nSaved ADV directional pressure time series:\n"
-#         f"{directional_pressure_file}"
-#     )
-#     print(directional_pressure.groupby("case_id").size())
+    directional_pressure = (
+        directional_pressure
+        .sort_values(["case_id", "time", "analysis_block_number"])
+        .reset_index(drop=True)
+    )
+    directional_pressure.to_parquet(
+        directional_pressure_file,
+        index=False,
+    )
+    print(
+        "\nSaved ADV directional pressure time series:\n"
+        f"{directional_pressure_file}"
+    )
+    print(directional_pressure.groupby("case_id").size())
 
 # ============================================================
 # SAVE BURST-LEVEL ADCP PRESSURE / WAVE STATISTICS
