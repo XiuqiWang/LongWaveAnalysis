@@ -39,13 +39,13 @@ from scipy.signal import welch
 
 input_file = Path(
     r"C:\dev\Python\LongWaveAnalysis\Processed"
-    r"\Pressure_F1_ADV01_APC.parquet"
+    r"\Pressure_F3_ADV05_APC.parquet"
 )
 
-case_id = "DVN_F1_ADV01"
-case_label = "DVN F1 ADV01"
+case_id = "DVN_F3_ADV05"
+case_label = "DVN F3 ADV05"
 
-pressure_column = "pressure_apc_ADV01_90cm_pa"
+pressure_column = "pressure_apc_ADV05_90cm_pa"
 
 output_folder = Path(
     r"C:\dev\Python\LongWaveAnalysis\Spectra"
@@ -91,7 +91,7 @@ tail_anchor_bins = 5
 minimum_valid_fraction = 0.98
 minimum_block_fraction = 0.95
 minimum_water_depth_m = 0.25
-expected_water_depth_m = 20 # Change for Frame!
+expected_water_depth_m = 12 # Change for Frame!
 maximum_depth_deviation_m = 3.0
 
 detrend_order = 2
@@ -1642,7 +1642,7 @@ statistics_file = (
 # them.
 common_wave_heights_file = (
     output_folder
-    / "all_cases_wave_heights_common_fc.csv"
+    / "all_cases_wave_heights_ADV.csv"
 )
 
 statistics.to_csv(statistics_file, index=False)
