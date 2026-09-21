@@ -62,7 +62,6 @@ import numpy as np
 import pandas as pd
 from scipy.signal import welch, csd
 
-
 # ============================================================
 # USER SETTINGS
 # ============================================================
@@ -82,9 +81,8 @@ processed_folder = Path(
 
 input_file_vel = (
     spectra_folder
-    / "all_cases_ADCP_current_wave_axis.csv"
+    / "all_cases_ADCP_UP_velocity.csv"
 )
-
 
 # ------------------------------------------------------------
 # Pressure-derived IG/SS wave statistics
@@ -94,7 +92,7 @@ input_file_vel = (
 
 input_file_wave = (
     spectra_folder
-    / "all_cases_wave_heights_common_fc.csv"
+    / "all_cases_wave_heights_ADCP_UP.csv"
 )
 
 
@@ -132,7 +130,7 @@ frame_labels = {
 
 # High-resolution ADCP bursts and pressure-wave bursts
 wave_merge_tolerance = pd.Timedelta(
-    "20min"
+    "30min"
 )
 
 # New current data have nominal 10-min resolution.
@@ -1267,10 +1265,10 @@ for frame_id in [
     ]
 
 
-    d = break_plot_gaps(
-        d,
-        columns_to_break,
-    )
+    # d = break_plot_gaps(
+    #     d,
+    #     columns_to_break,
+    # )
 
 
     fig, axes = plt.subplots(
@@ -1746,519 +1744,519 @@ fig.tight_layout(
 
 plt.show()
 
-# ============================================================
-# TIDAL-TIMESCALE COHERENCE + PHASE
-# 4-cell velocity variance + surface-elevation variance
-# relative to |U_DA|
-# ============================================================
-
-grid_minutes = 10
-max_interp_gap = 6          # 6 × 10 min = 1 hour
-welch_days = 5
-overlap_fraction = 0.5
-
-plot_fmin_cpd, plot_fmax_cpd = 0.5, 4.0
-M2_cpd = 1.9323
-M4_cpd = 2 * M2_cpd
-
+# # ============================================================
+# # TIDAL-TIMESCALE COHERENCE + PHASE
+# # 4-cell velocity variance + surface-elevation variance
+# # relative to |U_DA|
+# # ============================================================
+
+# grid_minutes = 10
+# max_interp_gap = 6          # 6 × 10 min = 1 hour
+# welch_days = 5
+# overlap_fraction = 0.5
+
+# plot_fmin_cpd, plot_fmax_cpd = 0.5, 4.0
+# M2_cpd = 1.9323
+# M4_cpd = 2 * M2_cpd
+
 
-def interp_short_gaps(s, max_gap):
-    """Interpolate only internal gaps <= max_gap samples."""
-    s = pd.Series(s, dtype=float).copy()
-    miss = s.isna()
+# def interp_short_gaps(s, max_gap):
+#     """Interpolate only internal gaps <= max_gap samples."""
+#     s = pd.Series(s, dtype=float).copy()
+#     miss = s.isna()
 
-    if not miss.any():
-        return s
+#     if not miss.any():
+#         return s
 
-    candidate = s.interpolate(method="linear", limit_area="inside")
-    groups = miss.ne(miss.shift()).cumsum()
-
-    for g in groups[miss].unique():
-        idx = groups.index[(groups == g) & miss]
-
-        if (
-            len(idx) <= max_gap
-            and idx[0] != s.index[0]
-            and idx[-1] != s.index[-1]
-            and np.isfinite(s.loc[idx[0] - 1])
-            and np.isfinite(s.loc[idx[-1] + 1])
-        ):
-            s.loc[idx] = candidate.loc[idx]
-
-    return s
+#     candidate = s.interpolate(method="linear", limit_area="inside")
+#     groups = miss.ne(miss.shift()).cumsum()
+
+#     for g in groups[miss].unique():
+#         idx = groups.index[(groups == g) & miss]
+
+#         if (
+#             len(idx) <= max_gap
+#             and idx[0] != s.index[0]
+#             and idx[-1] != s.index[-1]
+#             and np.isfinite(s.loc[idx[0] - 1])
+#             and np.isfinite(s.loc[idx[-1] + 1])
+#         ):
+#             s.loc[idx] = candidate.loc[idx]
+
+#     return s
 
-
-def spectral_pair(reference, response):
-    """
-    Coherence and phase between reference and response.
-
-    phase = response - reference
-    positive phase -> response leads reference
-    """
-    x = np.asarray(reference, float)
-    y = np.asarray(response, float)
-    valid = np.isfinite(x) & np.isfinite(y)
+
+# def spectral_pair(reference, response):
+#     """
+#     Coherence and phase between reference and response.
+
+#     phase = response - reference
+#     positive phase -> response leads reference
+#     """
+#     x = np.asarray(reference, float)
+#     y = np.asarray(response, float)
+#     valid = np.isfinite(x) & np.isfinite(y)
 
-    edges = np.diff(np.r_[False, valid, False].astype(int))
-    starts = np.where(edges == 1)[0]
-    stops = np.where(edges == -1)[0]
-
-    fs = 1.0 / (grid_minutes * 60.0)
-    nperseg = int(round(welch_days * 86400 * fs))
-    noverlap = int(overlap_fraction * nperseg)
-    step = nperseg - noverlap
-
-    Sxx_sum = Syy_sum = Sxy_sum = None
-    total_weight = 0
-
-    for i0, i1 in zip(starts, stops):
-
-        xx = x[i0:i1]
-        yy = y[i0:i1]
-
-        if len(xx) < nperseg:
-            continue
-
-        nseg = 1 + (len(xx) - nperseg) // step
-
-        kw = dict(
-            fs=fs,
-            window="hann",
-            nperseg=nperseg,
-            noverlap=noverlap,
-            detrend="linear",
-            scaling="density",
-        )
-
-        f, Sxx = welch(xx, **kw)
-        _, Syy = welch(yy, **kw)
-        _, Sxy = csd(xx, yy, **kw)
-
-        if Sxx_sum is None:
-            Sxx_sum = nseg * Sxx
-            Syy_sum = nseg * Syy
-            Sxy_sum = nseg * Sxy
-        else:
-            Sxx_sum += nseg * Sxx
-            Syy_sum += nseg * Syy
-            Sxy_sum += nseg * Sxy
-
-        total_weight += nseg
-
-    if total_weight == 0:
-        return None
-
-    Sxx = Sxx_sum / total_weight
-    Syy = Syy_sum / total_weight
-    Sxy = Sxy_sum / total_weight
-
-    coherence = np.clip(
-        np.abs(Sxy)**2 / (Sxx * Syy),
-        0, 1,
-    )
-
-    phase = np.degrees(np.angle(Sxy))
-
-    return f, coherence, phase
-
-
-def regularize_series(time, values):
-    """Put one time series on the common 10-min grid."""
-    x = pd.DataFrame({
-        "mid_time": time,
-        "value": values,
-    })
-
-    x = (
-        x.dropna(subset=["mid_time"])
-        .sort_values("mid_time")
-        .drop_duplicates("mid_time")
-        .set_index("mid_time")
-        .resample(f"{grid_minutes}min")
-        .mean()
-    )
-
-    x["value"] = interp_short_gaps(
-        x["value"].reset_index(drop=True),
-        max_interp_gap,
-    ).to_numpy()
-
-    return x["value"]
-
-
-# ============================================================
-# RUN + PLOT
-# ============================================================
-
-for frame_id in frames_to_plot:
-
-    if frame_id not in matched or frame_id not in depth_averaged:
-        continue
-
-    # --------------------------------------------------------
-    # Common time grid
-    # --------------------------------------------------------
-    time_grid = pd.date_range(
-        plot_start,
-        plot_end,
-        freq=f"{grid_minutes}min",
-        inclusive="left",
-    )
-
-    # --------------------------------------------------------
-    # Depth-averaged current speed
-    # --------------------------------------------------------
-    cur = depth_averaged[frame_id]
-
-    UDA = regularize_series(
-        cur["current_time"],
-        cur[current_speed_column],
-    ).reindex(time_grid)
-
-    # --------------------------------------------------------
-    # Surface-elevation variances
-    # already calculated in matched[]
-    # --------------------------------------------------------
-    dm = matched[frame_id]
-
-    m0 = {}
-
-    for band in ["IG", "SS"]:
-        col = f"m0_{band}"
-
-        m0[band] = regularize_series(
-            dm["mid_time"],
-            dm[col],
-        ).reindex(time_grid)
-
-    # --------------------------------------------------------
-    # Four-cell velocity data
-    # df_vel is LONG FORMAT:
-    # one row per burst × cell
-    # --------------------------------------------------------
-    dv = df_vel.loc[
-        (df_vel["frame_id"] == frame_id)
-        & (df_vel["mid_time"] >= plot_start)
-        & (df_vel["mid_time"] < plot_end)
-    ].copy()
-
-    if dv.empty:
-        continue
-
-    # RMS² = total horizontal variance
-    dv["var_IG"] = dv[horizontal_ig_column]**2
-    dv["var_SS"] = dv[horizontal_ss_column]**2
-
-    # Representative height for each selected cell
-    cell_height_map = (
-        dv.groupby(cell_column)[height_column]
-        .median()
-        .to_dict()
-    )
-
-    frame_cells = sorted(
-        dv[cell_column].dropna().unique()
-    )
-
-    print(
-        f"\n{frame_id}: coherence analysis using "
-        f"cells {frame_cells}"
-    )
-
-    # --------------------------------------------------------
-    # 2 × 2 figure
-    #
-    # columns: IG / SS
-    # rows:    coherence / phase
-    # --------------------------------------------------------
-    fig, axes = plt.subplots(
-        2, 2,
-        figsize=(13, 8),
-        sharex=True,
-        sharey="row",
-    )
-
-    for j, band in enumerate(["IG", "SS"]):
-
-        ax_coh = axes[0, j]
-        ax_phase = axes[1, j]
-
-        # ----------------------------------------------------
-        # Velocity variance — each cell
-        # ----------------------------------------------------
-        for cell in frame_cells:
-
-            dc = dv.loc[
-                dv[cell_column] == cell
-            ].sort_values("mid_time")
-
-            variance = regularize_series(
-                dc["mid_time"],
-                dc[f"var_{band}"],
-            ).reindex(time_grid)
-
-            result = spectral_pair(
-                UDA,
-                variance,
-            )
-
-            if result is None:
-                print(
-                    f"No valid spectrum: "
-                    f"{frame_id}, {band}, cell {cell}"
-                )
-                continue
-
-            f_hz, coh, phase = result
-            f_cpd = f_hz * 86400.0
-
-            use = (
-                (f_cpd >= plot_fmin_cpd)
-                & (f_cpd <= plot_fmax_cpd)
-            )
-
-            z = cell_height_map.get(cell, np.nan)
-
-            line, = ax_coh.plot(
-                f_cpd[use],
-                coh[use],
-                label=rf"$\sigma_h^2$, z={z:.2f} m",
-            )
-
-            ax_phase.plot(
-                f_cpd[use],
-                phase[use],
-                color=line.get_color(),
-            )
-
-        # ----------------------------------------------------
-        # Surface-elevation variance
-        # ----------------------------------------------------
-        result = spectral_pair(
-            UDA,
-            m0[band],
-        )
-
-        if result is not None:
-
-            f_hz, coh, phase = result
-            f_cpd = f_hz * 86400.0
-
-            use = (
-                (f_cpd >= plot_fmin_cpd)
-                & (f_cpd <= plot_fmax_cpd)
-            )
-
-            ax_coh.plot(
-                f_cpd[use],
-                coh[use],
-                "k--",
-                linewidth=2,
-                label=r"$m_{0,\eta}$",
-            )
-
-            ax_phase.plot(
-                f_cpd[use],
-                phase[use],
-                "k--",
-                linewidth=2,
-            )
-
-        # ----------------------------------------------------
-        # Formatting
-        # ----------------------------------------------------
-        for ax in [ax_coh, ax_phase]:
-
-            ax.axvline(
-                M2_cpd,
-                color="0.6",
-                linestyle=":",
-                linewidth=0.8,
-            )
-
-            ax.axvline(
-                M4_cpd,
-                color="0.4",
-                linestyle="--",
-                linewidth=0.9,
-            )
-
-            ax.set_xlim(
-                plot_fmin_cpd,
-                plot_fmax_cpd,
-            )
-
-            ax.grid(True, alpha=0.25)
-
-        ax_coh.set_title(f"{band} band")
-        ax_coh.set_ylim(0, 1)
-
-        ax_phase.axhline(
-            0,
-            color="0.5",
-            linestyle=":",
-            linewidth=0.8,
-        )
-
-        ax_phase.set_ylim(-180, 180)
-        ax_phase.set_yticks(
-            [-180, -90, 0, 90, 180]
-        )
-
-        ax_phase.set_xlabel(
-            "Frequency (cycles/day)"
-        )
-
-    axes[0, 0].set_ylabel(
-        r"Coherence $\gamma^2$"
-    )
-
-    axes[1, 0].set_ylabel(
-        "Phase (deg)"
-    )
-
-    axes[0, 0].legend(
-        fontsize=9,
-        ncol=2,
-    )
-
-    fig.suptitle(
-        "Tidal-timescale coherence and phase\n"
-        f"{frame_labels[frame_id]}: variance relative to "
-        r"$|\mathbf{U}_{DA}|$"
-    )
-
-    fig.tight_layout(
-        rect=[0, 0, 1, 0.94]
-    )
-
-    plt.show()
-
-# ============================================================
-# FLOOD / EBB ASYMMETRY OF VELOCITY RMS
-#
-# Positive U_DA,along = EBB
-# Negative U_DA,along = FLOOD
-# ============================================================
-
-for frame_id in frames_to_plot:
-
-    if frame_id not in matched:
-        continue
-
-    d = matched[frame_id].loc[
-        (matched[frame_id]["mid_time"] >= plot_start)
-        & (matched[frame_id]["mid_time"] < plot_end)
-    ].copy()
-
-    # Total depth-averaged current speed for the x-axis.
-    # Flood/ebb classification is still based on the SIGN of
-    # the alongshore depth-averaged current.
-    d["abs_U_DA"] = d[current_speed_column]
-
-    # Flood / ebb classification
-    d["tidal_direction"] = np.where(
-        d[current_along_column] > 0,
-        "Ebb",
-        "Flood",
-    )
-
-    fig, axes = plt.subplots(
-        1, 2,
-        figsize=(11, 4.5),
-        sharex=True,
-    )
-
-    variables = [
-        (
-            horizontal_ig_column,
-            r"$U_{h,\mathrm{RMS,IG}}$ (m/s)",
-        ),
-        (
-            horizontal_ss_column,
-            r"$U_{h,\mathrm{RMS,SS}}$ (m/s)",
-        ),
-    ]
-
-    for ax, (column, ylabel) in zip(
-        axes,
-        variables,
-    ):
-
-        for direction, marker in [
-            ("Flood", "o"),
-            ("Ebb", "^"),
-        ]:
-
-            x = d.loc[
-                d["tidal_direction"] == direction,
-                [
-                    "abs_U_DA",
-                    column,
-                ],
-            ].dropna()
-
-            ax.scatter(
-                x["abs_U_DA"],
-                x[column],
-                s=20,
-                alpha=0.4,
-                marker=marker,
-                label=direction,
-            )
-
-            # Linear fit for each tidal direction
-            if len(x) >= 3:
-
-                slope, intercept = np.polyfit(
-                    x["abs_U_DA"],
-                    x[column],
-                    1,
-                )
-
-                xx = np.linspace(
-                    x["abs_U_DA"].min(),
-                    x["abs_U_DA"].max(),
-                    100,
-                )
-
-                ax.plot(
-                    xx,
-                    slope * xx + intercept,
-                    linewidth=2,
-                )
-
-                print(
-                    f"{frame_id} | {column} | "
-                    f"{direction}: "
-                    f"slope = {slope:.4f}"
-                )
-
-        ax.set_xlabel(
-            r"$|\mathbf{U}_{DA}|$ (m/s)"
-        )
-
-        ax.set_ylabel(
-            ylabel
-        )
-
-        ax.set_xlim(left=0)
-        ax.set_ylim(bottom=0)
-
-        ax.grid(
-            True,
-            alpha=0.3,
-        )
-
-        ax.legend()
-
-    fig.suptitle(
-        "Flood–ebb asymmetry of velocity RMS response\n"
-        f"{frame_labels[frame_id]}"
-    )
-
-    fig.tight_layout(
-        rect=[0, 0, 1, 0.93]
-    )
-
-    plt.show()
+#     edges = np.diff(np.r_[False, valid, False].astype(int))
+#     starts = np.where(edges == 1)[0]
+#     stops = np.where(edges == -1)[0]
+
+#     fs = 1.0 / (grid_minutes * 60.0)
+#     nperseg = int(round(welch_days * 86400 * fs))
+#     noverlap = int(overlap_fraction * nperseg)
+#     step = nperseg - noverlap
+
+#     Sxx_sum = Syy_sum = Sxy_sum = None
+#     total_weight = 0
+
+#     for i0, i1 in zip(starts, stops):
+
+#         xx = x[i0:i1]
+#         yy = y[i0:i1]
+
+#         if len(xx) < nperseg:
+#             continue
+
+#         nseg = 1 + (len(xx) - nperseg) // step
+
+#         kw = dict(
+#             fs=fs,
+#             window="hann",
+#             nperseg=nperseg,
+#             noverlap=noverlap,
+#             detrend="linear",
+#             scaling="density",
+#         )
+
+#         f, Sxx = welch(xx, **kw)
+#         _, Syy = welch(yy, **kw)
+#         _, Sxy = csd(xx, yy, **kw)
+
+#         if Sxx_sum is None:
+#             Sxx_sum = nseg * Sxx
+#             Syy_sum = nseg * Syy
+#             Sxy_sum = nseg * Sxy
+#         else:
+#             Sxx_sum += nseg * Sxx
+#             Syy_sum += nseg * Syy
+#             Sxy_sum += nseg * Sxy
+
+#         total_weight += nseg
+
+#     if total_weight == 0:
+#         return None
+
+#     Sxx = Sxx_sum / total_weight
+#     Syy = Syy_sum / total_weight
+#     Sxy = Sxy_sum / total_weight
+
+#     coherence = np.clip(
+#         np.abs(Sxy)**2 / (Sxx * Syy),
+#         0, 1,
+#     )
+
+#     phase = np.degrees(np.angle(Sxy))
+
+#     return f, coherence, phase
+
+
+# def regularize_series(time, values):
+#     """Put one time series on the common 10-min grid."""
+#     x = pd.DataFrame({
+#         "mid_time": time,
+#         "value": values,
+#     })
+
+#     x = (
+#         x.dropna(subset=["mid_time"])
+#         .sort_values("mid_time")
+#         .drop_duplicates("mid_time")
+#         .set_index("mid_time")
+#         .resample(f"{grid_minutes}min")
+#         .mean()
+#     )
+
+#     x["value"] = interp_short_gaps(
+#         x["value"].reset_index(drop=True),
+#         max_interp_gap,
+#     ).to_numpy()
+
+#     return x["value"]
+
+
+# # ============================================================
+# # RUN + PLOT
+# # ============================================================
+
+# for frame_id in frames_to_plot:
+
+#     if frame_id not in matched or frame_id not in depth_averaged:
+#         continue
+
+#     # --------------------------------------------------------
+#     # Common time grid
+#     # --------------------------------------------------------
+#     time_grid = pd.date_range(
+#         plot_start,
+#         plot_end,
+#         freq=f"{grid_minutes}min",
+#         inclusive="left",
+#     )
+
+#     # --------------------------------------------------------
+#     # Depth-averaged current speed
+#     # --------------------------------------------------------
+#     cur = depth_averaged[frame_id]
+
+#     UDA = regularize_series(
+#         cur["current_time"],
+#         cur[current_speed_column],
+#     ).reindex(time_grid)
+
+#     # --------------------------------------------------------
+#     # Surface-elevation variances
+#     # already calculated in matched[]
+#     # --------------------------------------------------------
+#     dm = matched[frame_id]
+
+#     m0 = {}
+
+#     for band in ["IG", "SS"]:
+#         col = f"m0_{band}"
+
+#         m0[band] = regularize_series(
+#             dm["mid_time"],
+#             dm[col],
+#         ).reindex(time_grid)
+
+#     # --------------------------------------------------------
+#     # Four-cell velocity data
+#     # df_vel is LONG FORMAT:
+#     # one row per burst × cell
+#     # --------------------------------------------------------
+#     dv = df_vel.loc[
+#         (df_vel["frame_id"] == frame_id)
+#         & (df_vel["mid_time"] >= plot_start)
+#         & (df_vel["mid_time"] < plot_end)
+#     ].copy()
+
+#     if dv.empty:
+#         continue
+
+#     # RMS² = total horizontal variance
+#     dv["var_IG"] = dv[horizontal_ig_column]**2
+#     dv["var_SS"] = dv[horizontal_ss_column]**2
+
+#     # Representative height for each selected cell
+#     cell_height_map = (
+#         dv.groupby(cell_column)[height_column]
+#         .median()
+#         .to_dict()
+#     )
+
+#     frame_cells = sorted(
+#         dv[cell_column].dropna().unique()
+#     )
+
+#     print(
+#         f"\n{frame_id}: coherence analysis using "
+#         f"cells {frame_cells}"
+#     )
+
+#     # --------------------------------------------------------
+#     # 2 × 2 figure
+#     #
+#     # columns: IG / SS
+#     # rows:    coherence / phase
+#     # --------------------------------------------------------
+#     fig, axes = plt.subplots(
+#         2, 2,
+#         figsize=(13, 8),
+#         sharex=True,
+#         sharey="row",
+#     )
+
+#     for j, band in enumerate(["IG", "SS"]):
+
+#         ax_coh = axes[0, j]
+#         ax_phase = axes[1, j]
+
+#         # ----------------------------------------------------
+#         # Velocity variance — each cell
+#         # ----------------------------------------------------
+#         for cell in frame_cells:
+
+#             dc = dv.loc[
+#                 dv[cell_column] == cell
+#             ].sort_values("mid_time")
+
+#             variance = regularize_series(
+#                 dc["mid_time"],
+#                 dc[f"var_{band}"],
+#             ).reindex(time_grid)
+
+#             result = spectral_pair(
+#                 UDA,
+#                 variance,
+#             )
+
+#             if result is None:
+#                 print(
+#                     f"No valid spectrum: "
+#                     f"{frame_id}, {band}, cell {cell}"
+#                 )
+#                 continue
+
+#             f_hz, coh, phase = result
+#             f_cpd = f_hz * 86400.0
+
+#             use = (
+#                 (f_cpd >= plot_fmin_cpd)
+#                 & (f_cpd <= plot_fmax_cpd)
+#             )
+
+#             z = cell_height_map.get(cell, np.nan)
+
+#             line, = ax_coh.plot(
+#                 f_cpd[use],
+#                 coh[use],
+#                 label=rf"$\sigma_h^2$, z={z:.2f} m",
+#             )
+
+#             ax_phase.plot(
+#                 f_cpd[use],
+#                 phase[use],
+#                 color=line.get_color(),
+#             )
+
+#         # ----------------------------------------------------
+#         # Surface-elevation variance
+#         # ----------------------------------------------------
+#         result = spectral_pair(
+#             UDA,
+#             m0[band],
+#         )
+
+#         if result is not None:
+
+#             f_hz, coh, phase = result
+#             f_cpd = f_hz * 86400.0
+
+#             use = (
+#                 (f_cpd >= plot_fmin_cpd)
+#                 & (f_cpd <= plot_fmax_cpd)
+#             )
+
+#             ax_coh.plot(
+#                 f_cpd[use],
+#                 coh[use],
+#                 "k--",
+#                 linewidth=2,
+#                 label=r"$m_{0,\eta}$",
+#             )
+
+#             ax_phase.plot(
+#                 f_cpd[use],
+#                 phase[use],
+#                 "k--",
+#                 linewidth=2,
+#             )
+
+#         # ----------------------------------------------------
+#         # Formatting
+#         # ----------------------------------------------------
+#         for ax in [ax_coh, ax_phase]:
+
+#             ax.axvline(
+#                 M2_cpd,
+#                 color="0.6",
+#                 linestyle=":",
+#                 linewidth=0.8,
+#             )
+
+#             ax.axvline(
+#                 M4_cpd,
+#                 color="0.4",
+#                 linestyle="--",
+#                 linewidth=0.9,
+#             )
+
+#             ax.set_xlim(
+#                 plot_fmin_cpd,
+#                 plot_fmax_cpd,
+#             )
+
+#             ax.grid(True, alpha=0.25)
+
+#         ax_coh.set_title(f"{band} band")
+#         ax_coh.set_ylim(0, 1)
+
+#         ax_phase.axhline(
+#             0,
+#             color="0.5",
+#             linestyle=":",
+#             linewidth=0.8,
+#         )
+
+#         ax_phase.set_ylim(-180, 180)
+#         ax_phase.set_yticks(
+#             [-180, -90, 0, 90, 180]
+#         )
+
+#         ax_phase.set_xlabel(
+#             "Frequency (cycles/day)"
+#         )
+
+#     axes[0, 0].set_ylabel(
+#         r"Coherence $\gamma^2$"
+#     )
+
+#     axes[1, 0].set_ylabel(
+#         "Phase (deg)"
+#     )
+
+#     axes[0, 0].legend(
+#         fontsize=9,
+#         ncol=2,
+#     )
+
+#     fig.suptitle(
+#         "Tidal-timescale coherence and phase\n"
+#         f"{frame_labels[frame_id]}: variance relative to "
+#         r"$|\mathbf{U}_{DA}|$"
+#     )
+
+#     fig.tight_layout(
+#         rect=[0, 0, 1, 0.94]
+#     )
+
+#     plt.show()
+
+# # ============================================================
+# # FLOOD / EBB ASYMMETRY OF VELOCITY RMS
+# #
+# # Positive U_DA,along = EBB
+# # Negative U_DA,along = FLOOD
+# # ============================================================
+
+# for frame_id in frames_to_plot:
+
+#     if frame_id not in matched:
+#         continue
+
+#     d = matched[frame_id].loc[
+#         (matched[frame_id]["mid_time"] >= plot_start)
+#         & (matched[frame_id]["mid_time"] < plot_end)
+#     ].copy()
+
+#     # Total depth-averaged current speed for the x-axis.
+#     # Flood/ebb classification is still based on the SIGN of
+#     # the alongshore depth-averaged current.
+#     d["abs_U_DA"] = d[current_speed_column]
+
+#     # Flood / ebb classification
+#     d["tidal_direction"] = np.where(
+#         d[current_along_column] > 0,
+#         "Ebb",
+#         "Flood",
+#     )
+
+#     fig, axes = plt.subplots(
+#         1, 2,
+#         figsize=(11, 4.5),
+#         sharex=True,
+#     )
+
+#     variables = [
+#         (
+#             horizontal_ig_column,
+#             r"$U_{h,\mathrm{RMS,IG}}$ (m/s)",
+#         ),
+#         (
+#             horizontal_ss_column,
+#             r"$U_{h,\mathrm{RMS,SS}}$ (m/s)",
+#         ),
+#     ]
+
+#     for ax, (column, ylabel) in zip(
+#         axes,
+#         variables,
+#     ):
+
+#         for direction, marker in [
+#             ("Flood", "o"),
+#             ("Ebb", "^"),
+#         ]:
+
+#             x = d.loc[
+#                 d["tidal_direction"] == direction,
+#                 [
+#                     "abs_U_DA",
+#                     column,
+#                 ],
+#             ].dropna()
+
+#             ax.scatter(
+#                 x["abs_U_DA"],
+#                 x[column],
+#                 s=20,
+#                 alpha=0.4,
+#                 marker=marker,
+#                 label=direction,
+#             )
+
+#             # Linear fit for each tidal direction
+#             if len(x) >= 3:
+
+#                 slope, intercept = np.polyfit(
+#                     x["abs_U_DA"],
+#                     x[column],
+#                     1,
+#                 )
+
+#                 xx = np.linspace(
+#                     x["abs_U_DA"].min(),
+#                     x["abs_U_DA"].max(),
+#                     100,
+#                 )
+
+#                 ax.plot(
+#                     xx,
+#                     slope * xx + intercept,
+#                     linewidth=2,
+#                 )
+
+#                 print(
+#                     f"{frame_id} | {column} | "
+#                     f"{direction}: "
+#                     f"slope = {slope:.4f}"
+#                 )
+
+#         ax.set_xlabel(
+#             r"$|\mathbf{U}_{DA}|$ (m/s)"
+#         )
+
+#         ax.set_ylabel(
+#             ylabel
+#         )
+
+#         ax.set_xlim(left=0)
+#         ax.set_ylim(bottom=0)
+
+#         ax.grid(
+#             True,
+#             alpha=0.3,
+#         )
+
+#         ax.legend()
+
+#     fig.suptitle(
+#         "Flood–ebb asymmetry of velocity RMS response\n"
+#         f"{frame_labels[frame_id]}"
+#     )
+
+#     fig.tight_layout(
+#         rect=[0, 0, 1, 0.93]
+#     )
+
+#     plt.show()
