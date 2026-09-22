@@ -288,7 +288,7 @@ print("\nAccepted bursts by cell:")
 print(accepted.groupby(["cell_number", "height_relative_to_frame_bottom_m"]).size())
 
 # ----------------------------- SAVE -----------------------------
-direction_file = output_folder / "all_cases_ADCP_directional_velocity.parquet"
+direction_file = output_folder / "all_cases_ADCP_HR_directional_velocity.parquet"
 if direction_file.exists():
     old = pd.read_parquet(direction_file)
     old = old.loc[old["case_id"] != case_id]

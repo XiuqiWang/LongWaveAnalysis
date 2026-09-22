@@ -23,17 +23,17 @@ from scipy.signal import welch, csd
 
 # ------------------------- USER SETTINGS -------------------------
 input_file = Path(
-    r"C:\dev\Python\LongWaveAnalysis\Processed\DVN_F3_ADCP_UP_rotated.parquet"
+    r"C:\dev\Python\LongWaveAnalysis\Processed\DVN_F1_ADCP_UP_rotated.parquet"
 )
-case_id = "DVN_F3_ADCP_UP"
-case_label = "DVN F3 ADCP UP"
+case_id = "DVN_F1_ADCP_UP"
+case_label = "DVN F1 ADCP UP"
 
 output_folder = Path(r"C:\dev\Python\LongWaveAnalysis\Spectra")
 output_folder.mkdir(parents=True, exist_ok=True)
 
 # Select N cells approximately equally spaced over this height range.
 cell_height_min_m = 3.0
-cell_height_max_m = 10.0
+cell_height_max_m = 18.0 # 18 for F1 and 10 for F3
 N_cell = 4
 
 gap_threshold_seconds = 2.0
@@ -430,330 +430,338 @@ directional = pd.concat(directional_records, ignore_index=True) if directional_r
 print("\nAccepted bursts by cell:")
 print(accepted.groupby(["cell_number", "height_relative_to_frame_bottom_m"]).size())
 
-# ----------------------------- NO FILE OUTPUT -----------------------------
-# Results remain available in memory as:
-#   statistics : all accepted/rejected burst-cell statistics
-#   accepted   : accepted burst-cell statistics
-#   spectra    : burst-resolved Suu and Svv spectra
-#   directional: detrended u/v time series for accepted bursts
-#
-# No CSV or Parquet files are written by this script.
+# # ----------------------------- NO FILE OUTPUT -----------------------------
+# # Results remain available in memory as:
+# #   statistics : all accepted/rejected burst-cell statistics
+# #   accepted   : accepted burst-cell statistics
+# #   spectra    : burst-resolved Suu and Svv spectra
+# #   directional: detrended u/v time series for accepted bursts
+# #
+# # No CSV or Parquet files are written by this script.
 
-# ----------------------------- PLOTS -----------------------------
-# ---------------- MEAN / MEDIAN BURST AUTOSPECTRA ----------------
-# Suu, Svv and Suv have already been calculated for every accepted burst
-# in the processing loop above. The dataframe `spectra` stores the
-# burst-resolved Suu and Svv on the Welch frequency grid, so this block
-# only aggregates those already-computed burst spectra across time.
+# # ----------------------------- PLOTS -----------------------------
+# # ---------------- MEAN / MEDIAN BURST AUTOSPECTRA ----------------
+# # Suu, Svv and Suv have already been calculated for every accepted burst
+# # in the processing loop above. The dataframe `spectra` stores the
+# # burst-resolved Suu and Svv on the Welch frequency grid, so this block
+# # only aggregates those already-computed burst spectra across time.
 
-if not spectra.empty:
+# if not spectra.empty:
 
-    def plot_aggregate_velocity_spectra(statistic):
-        """Plot mean or median of the already-computed burst autospectra."""
-        statistic = statistic.lower()
-        if statistic not in {"mean", "median"}:
-            raise ValueError("statistic must be 'mean' or 'median'")
+#     def plot_aggregate_velocity_spectra(statistic):
+#         """Plot mean or median of the already-computed burst autospectra."""
+#         statistic = statistic.lower()
+#         if statistic not in {"mean", "median"}:
+#             raise ValueError("statistic must be 'mean' or 'median'")
 
-        ncols = 2
-        nrows = int(np.ceil(len(cells) / ncols))
+#         ncols = 2
+#         nrows = int(np.ceil(len(cells) / ncols))
 
-        fig, axes = plt.subplots(
-            nrows,
-            ncols,
-            figsize=(12, 4 * nrows),
-            sharex=True,
-            sharey=True,
-            squeeze=False,
-        )
+#         fig, axes = plt.subplots(
+#             nrows,
+#             ncols,
+#             figsize=(12, 4 * nrows),
+#             sharex=True,
+#             sharey=True,
+#             squeeze=False,
+#         )
 
-        axes = axes.ravel()
+#         axes = axes.ravel()
 
-        for ax in axes[len(cells):]:
-            ax.set_visible(False)
+#         for ax in axes[len(cells):]:
+#             ax.set_visible(False)
 
-        legend_handles = None
-        legend_labels = None
+#         legend_handles = None
+#         legend_labels = None
 
-        for ax, c in zip(axes, cells):
-            s = spectra.loc[
-                spectra["cell_number"] == c["cell_number"]
-            ].copy()
+#         for ax, c in zip(axes, cells):
+#             s = spectra.loc[
+#                 spectra["cell_number"] == c["cell_number"]
+#             ].copy()
 
-            if s.empty:
-                ax.set_visible(False)
-                continue
+#             if s.empty:
+#                 ax.set_visible(False)
+#                 continue
 
-            grouped = s.groupby("frequency_hz", sort=True)
+#             grouped = s.groupby("frequency_hz", sort=True)
 
-            if statistic == "mean":
-                agg = grouped[[
-                    "cross_psd_m2_s2_hz",
-                    "along_psd_m2_s2_hz",
-                ]].mean()
+#             if statistic == "mean":
+#                 agg = grouped[[
+#                     "cross_psd_m2_s2_hz",
+#                     "along_psd_m2_s2_hz",
+#                 ]].mean()
 
-                f = agg.index.to_numpy(float)
-                Suu = agg["cross_psd_m2_s2_hz"].to_numpy(float)
-                Svv = agg["along_psd_m2_s2_hz"].to_numpy(float)
+#                 f = agg.index.to_numpy(float)
+#                 Suu = agg["cross_psd_m2_s2_hz"].to_numpy(float)
+#                 Svv = agg["along_psd_m2_s2_hz"].to_numpy(float)
 
-            else:
-                med = grouped[[
-                    "cross_psd_m2_s2_hz",
-                    "along_psd_m2_s2_hz",
-                ]].median()
-                q25 = grouped[[
-                    "cross_psd_m2_s2_hz",
-                    "along_psd_m2_s2_hz",
-                ]].quantile(0.25)
-                q75 = grouped[[
-                    "cross_psd_m2_s2_hz",
-                    "along_psd_m2_s2_hz",
-                ]].quantile(0.75)
+#             else:
+#                 med = grouped[[
+#                     "cross_psd_m2_s2_hz",
+#                     "along_psd_m2_s2_hz",
+#                 ]].median()
+#                 q25 = grouped[[
+#                     "cross_psd_m2_s2_hz",
+#                     "along_psd_m2_s2_hz",
+#                 ]].quantile(0.25)
+#                 q75 = grouped[[
+#                     "cross_psd_m2_s2_hz",
+#                     "along_psd_m2_s2_hz",
+#                 ]].quantile(0.75)
 
-                f = med.index.to_numpy(float)
-                Suu = med["cross_psd_m2_s2_hz"].to_numpy(float)
-                Svv = med["along_psd_m2_s2_hz"].to_numpy(float)
+#                 f = med.index.to_numpy(float)
+#                 Suu = med["cross_psd_m2_s2_hz"].to_numpy(float)
+#                 Svv = med["along_psd_m2_s2_hz"].to_numpy(float)
 
-                # Interquartile spread across bursts
-                ax.fill_between(
-                    f,
-                    q25["cross_psd_m2_s2_hz"].to_numpy(float),
-                    q75["cross_psd_m2_s2_hz"].to_numpy(float),
-                    alpha=0.12,
-                )
-                ax.fill_between(
-                    f,
-                    q25["along_psd_m2_s2_hz"].to_numpy(float),
-                    q75["along_psd_m2_s2_hz"].to_numpy(float),
-                    alpha=0.12,
-                )
+#                 # Interquartile spread across bursts
+#                 ax.fill_between(
+#                     f,
+#                     q25["cross_psd_m2_s2_hz"].to_numpy(float),
+#                     q75["cross_psd_m2_s2_hz"].to_numpy(float),
+#                     alpha=0.12,
+#                 )
+#                 ax.fill_between(
+#                     f,
+#                     q25["along_psd_m2_s2_hz"].to_numpy(float),
+#                     q75["along_psd_m2_s2_hz"].to_numpy(float),
+#                     alpha=0.12,
+#                 )
 
-            ig_patch = ax.axvspan(
-                ig_low_hz, ig_high_hz, alpha=0.16, label="IG band"
-            )
-            ss_patch = ax.axvspan(
-                ss_low_hz, min(ss_high_hz, 0.5 * fs),
-                alpha=0.10, label="Sea-swell band"
-            )
+#             ig_patch = ax.axvspan(
+#                 ig_low_hz, ig_high_hz, alpha=0.16, label="IG band"
+#             )
+#             ss_patch = ax.axvspan(
+#                 ss_low_hz, min(ss_high_hz, 0.5 * fs),
+#                 alpha=0.10, label="Sea-swell band"
+#             )
 
-            line_u, = ax.plot(
-                f, Suu, linewidth=1.4,
-                label=f"Cross-shore {statistic}"
-            )
-            line_v, = ax.plot(
-                f, Svv, linewidth=1.4,
-                label=f"Alongshore {statistic}"
-            )
+#             line_u, = ax.plot(
+#                 f, Suu, linewidth=1.4,
+#                 label=f"Cross-shore {statistic}"
+#             )
+#             line_v, = ax.plot(
+#                 f, Svv, linewidth=1.4,
+#                 label=f"Alongshore {statistic}"
+#             )
 
-            ax.set_xscale("log")
-            ax.set_yscale("log")
-            ax.set_xlabel("Frequency (Hz)")
-            ax.set_ylabel(r"PSD ((m/s)$^2$/Hz)")
-            ax.set_title(
-                f"z={c['z_bin_m']:.3f} m"
-            )
-            ax.grid(True, which="both", alpha=0.22)
+#             ax.set_xscale("log")
+#             ax.set_yscale("log")
+#             ax.set_xlabel("Frequency (Hz)")
+#             ax.set_ylabel(r"PSD ((m/s)$^2$/Hz)")
+#             ax.set_title(
+#                 f"z={c['z_bin_m']:.3f} m"
+#             )
+#             ax.grid(True, which="both", alpha=0.22)
 
-            if legend_handles is None:
-                legend_handles = [line_u, line_v, ig_patch, ss_patch]
-                legend_labels = [
-                    f"Cross-shore {statistic}",
-                    f"Alongshore {statistic}",
-                    "IG band",
-                    "Sea-swell band",
-                ]
+#             if legend_handles is None:
+#                 legend_handles = [line_u, line_v, ig_patch, ss_patch]
+#                 legend_labels = [
+#                     f"Cross-shore {statistic}",
+#                     f"Alongshore {statistic}",
+#                     "IG band",
+#                     "Sea-swell band",
+#                 ]
 
-        fig.suptitle(
-            f"{statistic.capitalize()} ADCP velocity autospectra "
-            f"({case_label})"
-        )
+#         fig.suptitle(
+#             f"{statistic.capitalize()} ADCP velocity autospectra "
+#             f"({case_label})"
+#         )
 
-        if legend_handles is not None:
-            fig.legend(
-                legend_handles, legend_labels,
-                loc="upper center", ncol=4,
-                bbox_to_anchor=(0.5, 0.955),
-            )
+#         if legend_handles is not None:
+#             fig.legend(
+#                 legend_handles, legend_labels,
+#                 loc="upper center", ncol=4,
+#                 bbox_to_anchor=(0.5, 0.955),
+#             )
 
-        fig.tight_layout(rect=[0, 0, 1, 0.90])
-        plt.show()
+#         fig.tight_layout(rect=[0, 0, 1, 0.90])
+#         plt.show()
 
 
-    plot_aggregate_velocity_spectra("mean")
-    plot_aggregate_velocity_spectra("median")
+#     plot_aggregate_velocity_spectra("mean")
+#     plot_aggregate_velocity_spectra("median")
     
-# ============================================================
-# RMS TIME SERIES — ALL ACCEPTED BURSTS
-# ============================================================
+# # ============================================================
+# # RMS TIME SERIES — ALL ACCEPTED BURSTS
+# # ============================================================
 
-def plot_vertical_rms(column, title, ylabel):
-    fig, axes = plt.subplots(
-        len(cells),
-        1,
-        figsize=(12, 2.2 * len(cells)),
-        sharex=True,
-    )
+# def plot_vertical_rms(column, title, ylabel):
+#     fig, axes = plt.subplots(
+#         len(cells),
+#         1,
+#         figsize=(12, 2.2 * len(cells)),
+#         sharex=True,
+#     )
 
-    axes = np.atleast_1d(axes)
+#     axes = np.atleast_1d(axes)
 
-    # Common y-axis limit for vertical comparison
-    ymax = accepted[column].max()
+#     # Common y-axis limit for vertical comparison
+#     ymax = accepted[column].max()
 
-    for ax, c in zip(axes, cells):
+#     for ax, c in zip(axes, cells):
 
-        d = (
-            accepted.loc[
-                accepted["cell_number"] == c["cell_number"]
-            ]
-            .sort_values("mid_time")
-            .copy()
-        )
+#         d = (
+#             accepted.loc[
+#                 accepted["cell_number"] == c["cell_number"]
+#             ]
+#             .sort_values("mid_time")
+#             .copy()
+#         )
 
-        # Plot all accepted bursts directly.
-        # No artificial gap masking.
-        ax.plot(
-            d["mid_time"],
-            d[column],
-            linewidth=1.0,
-        )
+#         # Plot all accepted bursts directly.
+#         # No artificial gap masking.
+#         ax.plot(
+#             d["mid_time"],
+#             d[column],
+#             linewidth=1.0,
+#         )
 
-        ax.set_ylabel(ylabel)
+#         ax.set_ylabel(ylabel)
 
-        ax.set_ylim(
-            0,
-            1.05 * ymax if np.isfinite(ymax) else None,
-        )
+#         ax.set_ylim(
+#             0,
+#             1.05 * ymax if np.isfinite(ymax) else None,
+#         )
 
-        ax.grid(True, alpha=0.25)
+#         ax.grid(True, alpha=0.25)
 
-        ax.text(
-            0.01,
-            0.88,
-            f"z={c['z_bin_m']:.3f} m",
-            transform=ax.transAxes,
-            va="top",
-        )
+#         ax.text(
+#             0.01,
+#             0.88,
+#             f"z={c['z_bin_m']:.3f} m",
+#             transform=ax.transAxes,
+#             va="top",
+#         )
 
-    axes[-1].set_xlabel("Time")
+#     axes[-1].set_xlabel("Time")
 
-    fig.suptitle(
-        f"{title}\n{case_label}"
-    )
+#     fig.suptitle(
+#         f"{title}\n{case_label}"
+#     )
 
-    fig.tight_layout(
-        rect=[0, 0, 1, 0.96]
-    )
+#     fig.tight_layout(
+#         rect=[0, 0, 1, 0.96]
+#     )
 
-    plt.show()
-
-
-# IG RMS
-plot_vertical_rms(
-    "horizontal_ig_rms_m_s",
-    "Vertical consistency of IG velocity RMS",
-    r"$|\mathbf{U}_{\mathrm{RMS,IG}}|$" "\n(m/s)",
-)
+#     plt.show()
 
 
-# Sea-swell RMS
-plot_vertical_rms(
-    "horizontal_ss_rms_m_s",
-    "Vertical consistency of sea-swell velocity RMS",
-    r"$|\mathbf{U}_{\mathrm{RMS,SS}}|$" "\n(m/s)",
-)
+# # IG RMS
+# plot_vertical_rms(
+#     "horizontal_ig_rms_m_s",
+#     "Vertical consistency of IG velocity RMS",
+#     r"$|\mathbf{U}_{\mathrm{RMS,IG}}|$" "\n(m/s)",
+# )
 
 
-# ============================================================
-# IG / SS VELOCITY-VARIANCE RATIO
-# Highest selected cell
-# ============================================================
-
-highest = max(
-    cells,
-    key=lambda c: c["z_bin_m"],
-)
-
-d = (
-    accepted.loc[
-        accepted["cell_number"]
-        == highest["cell_number"]
-    ]
-    .sort_values("mid_time")
-    .copy()
-)
-
-d["R_u"] = (
-    d["horizontal_ig_rms_m_s"] ** 2
-    /
-    d["horizontal_ss_rms_m_s"] ** 2
-)
-
-d.loc[
-    ~np.isfinite(d["R_u"]),
-    "R_u",
-] = np.nan
+# # Sea-swell RMS
+# plot_vertical_rms(
+#     "horizontal_ss_rms_m_s",
+#     "Vertical consistency of sea-swell velocity RMS",
+#     r"$|\mathbf{U}_{\mathrm{RMS,SS}}|$" "\n(m/s)",
+# )
 
 
-fig, ax = plt.subplots(
-    figsize=(12, 4)
-)
+# # ============================================================
+# # IG / SS VELOCITY-VARIANCE RATIO
+# # Highest selected cell
+# # ============================================================
 
-# Plot all accepted bursts directly
-ax.plot(
-    d["mid_time"],
-    d["R_u"],
-    linewidth=1.0,
-)
+# highest = max(
+#     cells,
+#     key=lambda c: c["z_bin_m"],
+# )
 
-ax.set_ylabel(
-    r"$R_u="
-    r"U_{h,\mathrm{RMS,IG}}^2/"
-    r"U_{h,\mathrm{RMS,SS}}^2$"
-)
+# d = (
+#     accepted.loc[
+#         accepted["cell_number"]
+#         == highest["cell_number"]
+#     ]
+#     .sort_values("mid_time")
+#     .copy()
+# )
 
-ax.set_xlabel("Time")
-ax.set_ylim(bottom=0)
-ax.grid(True, alpha=0.25)
+# d["R_u"] = (
+#     d["horizontal_ig_rms_m_s"] ** 2
+#     /
+#     d["horizontal_ss_rms_m_s"] ** 2
+# )
 
-ax.set_title(
-    f"IG/SS velocity-variance ratio — "
-    f"Cell {highest['cell_number']}, "
-    f"z={highest['z_bin_m']:.3f} m "
-    f"({case_label})"
-)
+# d.loc[
+#     ~np.isfinite(d["R_u"]),
+#     "R_u",
+# ] = np.nan
 
-fig.tight_layout()
-plt.show()
+
+# fig, ax = plt.subplots(
+#     figsize=(12, 4)
+# )
+
+# # Plot all accepted bursts directly
+# ax.plot(
+#     d["mid_time"],
+#     d["R_u"],
+#     linewidth=1.0,
+# )
+
+# ax.set_ylabel(
+#     r"$R_u="
+#     r"U_{h,\mathrm{RMS,IG}}^2/"
+#     r"U_{h,\mathrm{RMS,SS}}^2$"
+# )
+
+# ax.set_xlabel("Time")
+# ax.set_ylim(bottom=0)
+# ax.grid(True, alpha=0.25)
+
+# ax.set_title(
+#     f"IG/SS velocity-variance ratio — "
+#     f"Cell {highest['cell_number']}, "
+#     f"z={highest['z_bin_m']:.3f} m "
+#     f"({case_label})"
+# )
+
+# fig.tight_layout()
+# plt.show()
 
 #--------SAVE----------#
-burst_file = output_folder / "all_cases_ADCP_UP_velocity.csv"  
-save_cols = [
-    "analysis_block_number", "source_segment_id", "subblock_number", "start_time", "end_time",
-    "mid_time", "cell_number", "height_relative_to_frame_bottom_m",
-    "cross_ig_variance_m2_s2", "along_ig_variance_m2_s2", "ig_uv_covariance_m2_s2",
-    "total_horizontal_ig_variance_m2_s2", "cross_ig_rms_m_s", "along_ig_rms_m_s",
-    "horizontal_ig_rms_m_s", "cross_ss_variance_m2_s2", "along_ss_variance_m2_s2",
-    "ss_uv_covariance_m2_s2", "total_horizontal_ss_variance_m2_s2", "cross_ss_rms_m_s",
-    "along_ss_rms_m_s", "horizontal_ss_rms_m_s",
-]
-burst = accepted[save_cols].copy()
-burst.insert(0, "case_name", case_label)
-burst.insert(0, "case_id", case_id)
-for k, val in {
-    "ig_low_hz": ig_low_hz, "ig_high_hz": ig_high_hz, "ss_low_hz": ss_low_hz,
-    "ss_high_hz": ss_high_hz, "detrend_order": detrend_order,
-    "welch_segment_seconds": welch_segment_seconds, "overlap_fraction": overlap_fraction,
-}.items():
-    burst[k] = val
-
-if burst_file.exists():
-    old = pd.read_csv(burst_file, parse_dates=["start_time", "end_time", "mid_time"],)
-
-    # Remove the old results for the case being processed.
-    # Results from the other cases are retained.
+direction_file = output_folder / "all_cases_ADCP_UP_directional_velocity.parquet"
+if direction_file.exists():
+    old = pd.read_parquet(direction_file)
     old = old.loc[old["case_id"] != case_id]
+    directional = pd.concat([old, directional], ignore_index=True)
+directional.sort_values(["case_id", "time", "cell_number"]).to_parquet(direction_file, index=False)
+print(f"\nSaved directional velocity:\n{direction_file}")
 
-    burst = pd.concat([old, burst], ignore_index=True,)
+# burst_file = output_folder / "all_cases_ADCP_UP_velocity.csv"  
+# save_cols = [
+#     "analysis_block_number", "source_segment_id", "subblock_number", "start_time", "end_time",
+#     "mid_time", "cell_number", "height_relative_to_frame_bottom_m",
+#     "cross_ig_variance_m2_s2", "along_ig_variance_m2_s2", "ig_uv_covariance_m2_s2",
+#     "total_horizontal_ig_variance_m2_s2", "cross_ig_rms_m_s", "along_ig_rms_m_s",
+#     "horizontal_ig_rms_m_s", "cross_ss_variance_m2_s2", "along_ss_variance_m2_s2",
+#     "ss_uv_covariance_m2_s2", "total_horizontal_ss_variance_m2_s2", "cross_ss_rms_m_s",
+#     "along_ss_rms_m_s", "horizontal_ss_rms_m_s",
+# ]
+# burst = accepted[save_cols].copy()
+# burst.insert(0, "case_name", case_label)
+# burst.insert(0, "case_id", case_id)
+# for k, val in {
+#     "ig_low_hz": ig_low_hz, "ig_high_hz": ig_high_hz, "ss_low_hz": ss_low_hz,
+#     "ss_high_hz": ss_high_hz, "detrend_order": detrend_order,
+#     "welch_segment_seconds": welch_segment_seconds, "overlap_fraction": overlap_fraction,
+# }.items():
+#     burst[k] = val
 
-burst = burst.sort_values(["case_id", "mid_time", "cell_number"])
-burst.to_csv(burst_file,index=False,)
-print(f"Saved burst spectral/RMS statistics:\n{burst_file}")
+# if burst_file.exists():
+#     old = pd.read_csv(burst_file, parse_dates=["start_time", "end_time", "mid_time"],)
+
+#     # Remove the old results for the case being processed.
+#     # Results from the other cases are retained.
+#     old = old.loc[old["case_id"] != case_id]
+
+#     burst = pd.concat([old, burst], ignore_index=True,)
+
+# burst = burst.sort_values(["case_id", "mid_time", "cell_number"])
+# burst.to_csv(burst_file,index=False,)
+# print(f"Saved burst spectral/RMS statistics:\n{burst_file}")
