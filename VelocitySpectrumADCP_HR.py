@@ -296,7 +296,7 @@ if direction_file.exists():
 directional.sort_values(["case_id", "time", "cell_number"]).to_parquet(direction_file, index=False)
 print(f"\nSaved directional velocity:\n{direction_file}")
 
-burst_file = output_folder / "all_cases_ADCP_current_wave_axis.csv"  # retained filename for compatibility
+burst_file = output_folder / "all_cases_ADCP_HR_velocity.csv"  # retained filename for compatibility
 save_cols = [
     "analysis_block_number", "source_segment_id", "subblock_number", "start_time", "end_time",
     "mid_time", "cell_number", "height_relative_to_frame_bottom_m",
