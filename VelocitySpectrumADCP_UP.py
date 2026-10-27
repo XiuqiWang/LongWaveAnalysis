@@ -22,18 +22,28 @@ import pyarrow.parquet as pq
 from scipy.signal import welch, csd
 
 # ------------------------- USER SETTINGS -------------------------
-input_file = Path(
-    r"C:\dev\Python\LongWaveAnalysis\Processed\DVN_F3_ADCP_UP_rotated.parquet"
-)
-case_id = "DVN_F3_ADCP_UP"
-case_label = "DVN F3 ADCP UP"
+location = "DVT2"
+frame = "F1"
+instrument = "ADCP_UP"
 
-output_folder = Path(r"C:\dev\Python\LongWaveAnalysis\Spectra")
+input_file = (
+    Path(r"C:\dev\Python\LongWaveAnalysis\Processed")
+    / location
+    / f"{location}_{frame}_{instrument}_rotated.parquet"
+)
+
+case_id = f"{location}_{frame}_{instrument.replace('_', '-')}"
+case_label = f"{location} {frame} {instrument.replace('_', '-')}"
+
+output_folder = (
+    Path(r"C:\dev\Python\LongWaveAnalysis\Spectra")
+    / location
+)
 output_folder.mkdir(parents=True, exist_ok=True)
 
 # Select N cells approximately equally spaced over this height range.
 cell_height_min_m = 3.0
-cell_height_max_m = 10.0 # 18 for F1 and 10 for F3
+cell_height_max_m = 12.0 # 18 for F1 and 10 for F3 DVN; 18 for F1 and 12 for DVT2
 N_cell = 4
 
 gap_threshold_seconds = 2.0
@@ -727,7 +737,7 @@ plot_vertical_rms(
 # plt.show()
 
 # #--------SAVE----------#
-# direction_file = output_folder / "all_cases_ADCP_UP_directional_velocity.parquet"
+# direction_file = (output_folder/ f"all_cases_{location}_{instrument}_directional_velocity.parquet")
 # if direction_file.exists():
 #     old = pd.read_parquet(direction_file)
 #     old = old.loc[old["case_id"] != case_id]
@@ -735,35 +745,35 @@ plot_vertical_rms(
 # directional.sort_values(["case_id", "time", "cell_number"]).to_parquet(direction_file, index=False)
 # print(f"\nSaved directional velocity:\n{direction_file}")
 
-# burst_file = output_folder / "all_cases_ADCP_UP_velocity.csv"  
-# save_cols = [
-#     "analysis_block_number", "source_segment_id", "subblock_number", "start_time", "end_time",
-#     "mid_time", "cell_number", "height_relative_to_frame_bottom_m",
-#     "cross_ig_variance_m2_s2", "along_ig_variance_m2_s2", "ig_uv_covariance_m2_s2",
-#     "total_horizontal_ig_variance_m2_s2", "cross_ig_rms_m_s", "along_ig_rms_m_s",
-#     "horizontal_ig_rms_m_s", "cross_ss_variance_m2_s2", "along_ss_variance_m2_s2",
-#     "ss_uv_covariance_m2_s2", "total_horizontal_ss_variance_m2_s2", "cross_ss_rms_m_s",
-#     "along_ss_rms_m_s", "horizontal_ss_rms_m_s",
-# ]
-# burst = accepted[save_cols].copy()
-# burst.insert(0, "case_name", case_label)
-# burst.insert(0, "case_id", case_id)
-# for k, val in {
-#     "ig_low_hz": ig_low_hz, "ig_high_hz": ig_high_hz, "ss_low_hz": ss_low_hz,
-#     "ss_high_hz": ss_high_hz, "detrend_order": detrend_order,
-#     "welch_segment_seconds": welch_segment_seconds, "overlap_fraction": overlap_fraction,
-# }.items():
-#     burst[k] = val
+burst_file = output_folder / "all_cases{location}_{instrument}_velocity.csv"  
+save_cols = [
+    "analysis_block_number", "source_segment_id", "subblock_number", "start_time", "end_time",
+    "mid_time", "cell_number", "height_relative_to_frame_bottom_m",
+    "cross_ig_variance_m2_s2", "along_ig_variance_m2_s2", "ig_uv_covariance_m2_s2",
+    "total_horizontal_ig_variance_m2_s2", "cross_ig_rms_m_s", "along_ig_rms_m_s",
+    "horizontal_ig_rms_m_s", "cross_ss_variance_m2_s2", "along_ss_variance_m2_s2",
+    "ss_uv_covariance_m2_s2", "total_horizontal_ss_variance_m2_s2", "cross_ss_rms_m_s",
+    "along_ss_rms_m_s", "horizontal_ss_rms_m_s",
+]
+burst = accepted[save_cols].copy()
+burst.insert(0, "case_name", case_label)
+burst.insert(0, "case_id", case_id)
+for k, val in {
+    "ig_low_hz": ig_low_hz, "ig_high_hz": ig_high_hz, "ss_low_hz": ss_low_hz,
+    "ss_high_hz": ss_high_hz, "detrend_order": detrend_order,
+    "welch_segment_seconds": welch_segment_seconds, "overlap_fraction": overlap_fraction,
+}.items():
+    burst[k] = val
 
-# if burst_file.exists():
-#     old = pd.read_csv(burst_file, parse_dates=["start_time", "end_time", "mid_time"],)
+if burst_file.exists():
+    old = pd.read_csv(burst_file, parse_dates=["start_time", "end_time", "mid_time"],)
 
-#     # Remove the old results for the case being processed.
-#     # Results from the other cases are retained.
-#     old = old.loc[old["case_id"] != case_id]
+    # Remove the old results for the case being processed.
+    # Results from the other cases are retained.
+    old = old.loc[old["case_id"] != case_id]
 
-#     burst = pd.concat([old, burst], ignore_index=True,)
+    burst = pd.concat([old, burst], ignore_index=True,)
 
-# burst = burst.sort_values(["case_id", "mid_time", "cell_number"])
-# burst.to_csv(burst_file,index=False,)
-# print(f"Saved burst spectral/RMS statistics:\n{burst_file}")
+burst = burst.sort_values(["case_id", "mid_time", "cell_number"])
+burst.to_csv(burst_file,index=False,)
+print(f"Saved burst spectral/RMS statistics:\n{burst_file}")
