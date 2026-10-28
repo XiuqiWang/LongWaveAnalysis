@@ -18,7 +18,7 @@ import pandas as pd
 
 file_path = (
     r"C:\dev\Python\LongWaveAnalysis\ADCP"
-    r"\UP\new\adcp_dvn_201804_f1p1_000.nc"
+    r"\DVT2\adcp_dvt2_201803_f4p3_000.nc"
 )
 
 velocity_variables = [

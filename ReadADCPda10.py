@@ -48,10 +48,10 @@ import pandas as pd
 
 file_path = Path(
     r"C:\dev\Python\LongWaveAnalysis\ADCP"
-    r"\UP\adcp_dvn_201804_f3p3_000_da10.nc"
+    r"\DVT2\adcp_dvt2_201803_f3p2_000_da10.nc"
 )
 
-case_id = "DVN_F3_ADCP_upward"
+case_id = "DVT2_F3_ADCP_upward"
 
 output_folder = Path(
     r"C:\dev\Python\LongWaveAnalysis\Processed"
@@ -84,14 +84,14 @@ maximum_interpolation_gap_samples = 3
 # ------------------------------------------------------------
 
 nearshore_point = (
-    52.23317,
-    4.3873215,
-)  # DVN3
+    53.45,
+    5.35,
+)  # DVN3 52.23317, 4.3873215,
 
 offshore_point = (
-    52.28087,
-    4.2432895,
-)  # DVN1
+    53.49,
+    5.34,
+)  # DVN1 52.28087, 4.2432895,
 
 
 # ============================================================

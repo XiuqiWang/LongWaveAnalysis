@@ -10,7 +10,7 @@ import numpy as np
 
 file_path = (
     r"C:\dev\Python\LongWaveAnalysis\ADCP-HR"
-    r"\adcp_hr_dvn_201804_F1P1.nc"
+    r"\adcp_hr_dvt2_201803_F3P2.nc"
 )
 
 with h5py.File(file_path, "r") as f:

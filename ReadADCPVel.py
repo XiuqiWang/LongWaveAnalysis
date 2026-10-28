@@ -25,14 +25,14 @@ import pandas as pd
 # ============================================================
 
 file_path = Path(
-    r"C:\dev\Python\LongWaveAnalysis\ADCP"
-    r"\UP\new\adcp_dvn_201804_f3p3_000.nc"
+    r"C:\dev\Python\LongWaveAnalysis\ADCP-HR",
+    r"adcp_hr_dvt2_201803_F3P2.nc"
 )
 
-case_id = "DVN_F3_ADCP_UP"
+case_id = "DVT2_F3_ADCP_HR"
 
 output_folder = Path(
-    r"C:\dev\Python\LongWaveAnalysis\Processed"
+    r"C:\dev\Python\LongWaveAnalysis\Processed\DVT2"
 )
 output_folder.mkdir(
     parents=True,
@@ -60,20 +60,20 @@ pressure_output_file = (
 # )
 
 # Positive cross-shore direction: nearshore -> offshore.
-nearshore_point = (52.23317, 4.3873215)  # DVN F3
-offshore_point = (52.28087, 4.2432895)   # DVN F1
+nearshore_point = (53.45, 5.35) # DVT2 F3 # (52.23317, 4.3873215) DVN F3
+offshore_point = (53.49, 5.34) # DVT2 F1 # (52.28087, 4.2432895) DVN F1
 
 # Select one instrument when the middle dimension has length > 1.
 instrument_index = 0
 
 # Set either value to None to read the complete available record.
 target_time_start = pd.Timestamp(
-    "2018-04-04 13:00:00",
+    "2018-03-12 16:00:00", # "2018-04-04 13:00:00", DVN
     tz="UTC",
 )
 
 target_time_stop = pd.Timestamp(
-    "2018-05-18 07:00:00",
+    "2018-03-26 10:10:00", # "2018-05-18 07:00:00", DVN
     tz="UTC",
 )
 
@@ -90,11 +90,11 @@ block_samples = 100_000
 #
 # Examples:
 #   ADCP:    cell_height_min_m = 3.0, cell_height_max_m = 18.0
-#   ADCP-HR: choose a range appropriate for its Z_bin values.
+#   ADCP-HR: cell_height_min_m = 0.0, cell_height_max_m = 0.5
 #
 # Set N_cell=None to keep every available cell inside the height range.
-cell_height_min_m = 3.0
-cell_height_max_m = 12.0
+cell_height_min_m = 0
+cell_height_max_m = 0.5
 N_cell = 8
 
 # Save original ENU components as well as rotated components.
