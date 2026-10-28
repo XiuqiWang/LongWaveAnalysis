@@ -22,7 +22,7 @@ from scipy.signal import welch, csd
 # USER SETTINGS
 # ============================================================
 location = "DVT2"
-frame = "F1"
+frame = "F3"
 instrument = "ADCP_HR"
 
 input_file = (
